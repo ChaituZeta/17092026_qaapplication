@@ -1,0 +1,33 @@
+<svg width="220" height="34" viewBox="0 0 220 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="paint1_linear_zeta_tl" x1="33.5348" y1="25.3221" x2="0.535129" y2="25.3221" gradientUnits="userSpaceOnUse">
+      <stop offset="0.3987" stop-color="#3b82f6" />
+      <stop offset="1" stop-color="#60a5fa" />
+    </linearGradient>
+    <linearGradient id="paint2_linear_zeta_tl" x1="0.535153" y1="8.82208" x2="33.5348" y2="8.82208" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00C2FF" />
+      <stop offset="0.5398" stop-color="#BC2676" />
+      <stop offset="0.8568" stop-color="#FFFB6A" />
+    </linearGradient>
+    <clipPath id="clip0_zeta_tl">
+      <rect width="110.833" height="33" fill="white" transform="translate(0 0.5)" />
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip0_zeta_tl)">
+    <path
+      d="M39.3468 10.5153H50.0685L39.2203 23.7249V27.1114L54.2662 27.0874L55.6569 23.7009L44.7329 23.7249L55.6569 10.4673V7.12885L40.7376 7.15286L39.3468 10.5153ZM73.2315 10.5153L74.6476 7.12885H58.565V24.5415C58.565 25.6943 58.8178 26.0066 59.3236 26.4869C59.9558 26.9673 60.3351 27.0874 61.5741 27.0633H73.2062L74.5464 23.7249H62.7626V18.6092H67.8706L69.2867 15.1987H62.7879V10.5153H73.2315ZM103.02 8.83409C102.514 7.7533 101.629 7.15286 100.365 7.15286H98.468L90.2497 27.1114H94.5485L96.445 22.428H104.309L106.206 27.1114H110.505L103.02 8.83409ZM97.5577 19.0415L100.466 11.8363L103.247 19.0415H97.5577ZM95.1554 7.12885H77.505L76.1142 10.4673H83.1693V27.0633H87.19V10.4673H93.7393L95.1554 7.12885Z"
+      fill="#FFFFFF"
+    />
+    <path
+      d="M15.3998 25.9585L14.4642 21.8996L8.14242 17.0721H0.531006L12.2895 26.0306L13.9837 33.5721L33.5307 17.0721H25.9192L15.3998 25.9585Z"
+      fill="url(#paint1_linear_zeta_tl)"
+    />
+    <path
+      d="M18.6619 8.18562L19.5722 12.2446L25.9192 17.0721H33.5307L21.7722 8.11357L20.0526 0.572083L0.531006 17.0721H8.14242L18.6619 8.18562Z"
+      fill="url(#paint2_linear_zeta_tl)"
+    />
+  </g>
+  <line x1="120" y1="7" x2="120" y2="27" stroke="#64748B" stroke-width="1.5" />
+  <text x="130" y="17" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="800" letter-spacing="1.5" fill="#FFFFFF">CAMPAIGN</text>
+  <text x="130" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="9.5" font-weight="500" letter-spacing="0.5" fill="#CBD5E1">QA Operations</text>
+</svg>
