@@ -67,16 +67,15 @@ export function resolveRequestOrigin(req: any, clientOrigin?: string): string {
 }
 
 /**
- * Builds a bulletproof signup / invitation link targeting the current assigned domain.
+ * Builds a bulletproof signup / invitation link targeting the current assigned domain using a secure token.
  */
 export function buildDynamicSignupUrl(
   req: any,
-  email: string,
+  tokenOrEmail: string,
   providedUrl?: string,
   clientOrigin?: string
 ): string {
   const origin = resolveRequestOrigin(req, clientOrigin);
-  const cleanEmail = (email || "").trim().toLowerCase();
 
   if (providedUrl && typeof providedUrl === "string" && providedUrl.startsWith("http")) {
     if (providedUrl.includes("localhost") && origin && !origin.includes("localhost")) {
@@ -89,7 +88,14 @@ export function buildDynamicSignupUrl(
   }
 
   const base = origin || "";
-  return `${base}/signup?email=${encodeURIComponent(cleanEmail)}`;
+  const identifier = (tokenOrEmail || "").trim();
+  // If it is an invite token (e.g. inv_... or does not contain @)
+  if (identifier.startsWith("inv_") || !identifier.includes("@")) {
+    return `${base}/signup?token=${encodeURIComponent(identifier)}`;
+  }
+
+  // If passed an email, do NOT append email into the URL directly to ensure security
+  return `${base}/signup`;
 }
 
 /**

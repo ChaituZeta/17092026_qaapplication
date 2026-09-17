@@ -14,7 +14,9 @@ import {
   Server,
   Key,
   ExternalLink,
-  Info
+  Info,
+  Copy,
+  ShieldAlert
 } from "lucide-react";
 import { syncAllCampaignsToDatabase, getAllCampaigns } from "@/lib/campaign-storage";
 import { cn } from "@/lib/utils";
@@ -27,6 +29,7 @@ export function NetworkStatusBar({ role }: { role?: string }) {
   const [isSimulatedOffline, setIsSimulatedOffline] = useState<boolean>(false);
   const [pendingCount, setPendingCount] = useState<number>(0);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [copiedRls, setCopiedRls] = useState<boolean>(false);
   
   // Toast state
   const [showToast, setShowToast] = useState<boolean>(false);
@@ -479,7 +482,42 @@ export function NetworkStatusBar({ role }: { role?: string }) {
                     <span className="text-blue-300">VITE_SUPABASE_ANON_KEY</span>=
                     <span className="text-amber-200 font-mono">{import.meta.env.VITE_SUPABASE_ANON_KEY || "your-anon-public-key"}</span>
                   </div>
+                  <div>
+                    <span className="text-blue-300">SUPABASE_SERVICE_ROLE_KEY</span>=
+                    <span className="text-slate-400 font-mono">your-service-role-key (recommended for server endpoints)</span>
+                  </div>
                 </div>
+              </div>
+
+              {/* Supabase Row Level Security (RLS) Fix */}
+              <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-4 text-xs space-y-2 text-slate-700">
+                <div className="flex items-center justify-between">
+                  <p className="font-bold text-blue-950 flex items-center gap-1.5">
+                    <ShieldAlert className="w-4 h-4 text-blue-600 shrink-0" />
+                    Supabase Row Level Security (RLS) Fix
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sql = `-- Allow public/anon access for campaigns table\nALTER TABLE public.campaigns ENABLE ROW LEVEL SECURITY;\nDROP POLICY IF EXISTS "Public access for campaigns" ON public.campaigns;\nCREATE POLICY "Public access for campaigns" ON public.campaigns FOR ALL USING (true) WITH CHECK (true);`;
+                      navigator.clipboard.writeText(sql);
+                      setCopiedRls(true);
+                      setTimeout(() => setCopiedRls(false), 2500);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer"
+                  >
+                    {copiedRls ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
+                    {copiedRls ? "Copied SQL!" : "Copy SQL"}
+                  </button>
+                </div>
+                <p className="text-[11px] text-blue-900 leading-relaxed">
+                  If your database has campaigns but they don't show up after deploying to Vercel, Supabase's default RLS is blocking the <code>anon</code> public key. Run this SQL in your <strong>Supabase Dashboard → SQL Editor</strong>:
+                </p>
+                <pre className="bg-slate-900 text-slate-200 p-2.5 rounded-lg text-[10px] font-mono overflow-x-auto select-all leading-tight border border-slate-800">
+{`ALTER TABLE public.campaigns ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public access for campaigns" ON public.campaigns;
+CREATE POLICY "Public access for campaigns" ON public.campaigns FOR ALL USING (true) WITH CHECK (true);`}
+                </pre>
               </div>
 
               {/* Vercel Deployment Instructions */}
@@ -490,8 +528,8 @@ export function NetworkStatusBar({ role }: { role?: string }) {
                 </p>
                 <ol className="list-decimal pl-4 space-y-1 text-slate-600 leading-relaxed">
                   <li>Go to your Vercel Project Dashboard → <strong>Settings</strong> → <strong>Environment Variables</strong>.</li>
-                  <li>Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code>.</li>
-                  <li>Click <strong>Redeploy</strong> in Vercel to activate the database connection.</li>
+                  <li>Add <code>VITE_SUPABASE_URL</code>, <code>VITE_SUPABASE_ANON_KEY</code>, and <code>SUPABASE_SERVICE_ROLE_KEY</code>.</li>
+                  <li>Click <strong>Deployments</strong> → <strong>Redeploy</strong> in Vercel.</li>
                 </ol>
               </div>
 

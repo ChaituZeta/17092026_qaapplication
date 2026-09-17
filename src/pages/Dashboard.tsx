@@ -25,7 +25,10 @@ import {
   Activity,
   Folder,
   FolderOpen,
-  FolderPlus
+  FolderPlus,
+  Copy,
+  Check,
+  ShieldAlert
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -208,6 +211,7 @@ export function Dashboard({ userEmail, userRole }: DashboardProps) {
   const [availableFolders, setAvailableFolders] = useState<FolderItem[]>([]);
   const [isCreatingFolderInModal, setIsCreatingFolderInModal] = useState(false);
   const [newFolderNameInModal, setNewFolderNameInModal] = useState("");
+  const [copiedRls, setCopiedRls] = useState(false);
 
   const handleCreateFolderAndStart = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -1311,8 +1315,8 @@ export function Dashboard({ userEmail, userRole }: DashboardProps) {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={8} className="px-6 py-12 text-center text-slate-500 text-xs">
-                          <div className="max-w-sm mx-auto space-y-2">
+                        <td colSpan={8} className="px-6 py-10 text-center text-slate-500 text-xs">
+                          <div className="max-w-md mx-auto space-y-3">
                             <FileText className="w-8 h-8 text-slate-300 mx-auto" />
                             <p className="font-semibold text-slate-700">No matching campaigns found</p>
                             <p className="text-slate-400 text-[11px]">
@@ -1323,11 +1327,43 @@ export function Dashboard({ userEmail, userRole }: DashboardProps) {
                             {hasActiveFilters && (
                               <button
                                 onClick={resetAllFilters}
-                                className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[#2b61d6] bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
+                                className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[#2b61d6] bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer"
                               >
                                 <RotateCcw className="w-3.5 h-3.5" />
                                 Reset Filters
                               </button>
+                            )}
+
+                            {!hasActiveFilters && isSupabaseConfigured() && (
+                              <div className="mt-4 p-3.5 bg-blue-50/90 border border-blue-200 rounded-xl text-left space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-1.5 font-bold text-blue-950 text-xs">
+                                    <ShieldAlert className="w-4 h-4 text-blue-600 shrink-0" />
+                                    <span>Database connected, but campaigns missing?</span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const sql = `-- Allow public/anon access for campaigns table\nALTER TABLE public.campaigns ENABLE ROW LEVEL SECURITY;\nDROP POLICY IF EXISTS "Public access for campaigns" ON public.campaigns;\nCREATE POLICY "Public access for campaigns" ON public.campaigns FOR ALL USING (true) WITH CHECK (true);`;
+                                      navigator.clipboard.writeText(sql);
+                                      setCopiedRls(true);
+                                      setTimeout(() => setCopiedRls(false), 2500);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer shrink-0"
+                                  >
+                                    {copiedRls ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
+                                    {copiedRls ? "Copied SQL!" : "Copy SQL Fix"}
+                                  </button>
+                                </div>
+                                <p className="text-[11px] text-blue-900 leading-relaxed">
+                                  If campaigns exist in Supabase but are not displaying on Vercel, Supabase's <strong>Row Level Security (RLS)</strong> is restricting the public anon key. Run the policy below in your <strong>Supabase Dashboard → SQL Editor</strong> to enable instant access:
+                                </p>
+                                <pre className="bg-slate-900 text-slate-200 p-2 rounded-lg text-[10px] font-mono overflow-x-auto select-all leading-tight border border-slate-800">
+{`ALTER TABLE public.campaigns ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public access for campaigns" ON public.campaigns;
+CREATE POLICY "Public access for campaigns" ON public.campaigns FOR ALL USING (true) WITH CHECK (true);`}
+                                </pre>
+                              </div>
                             )}
                           </div>
                         </td>

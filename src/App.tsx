@@ -132,6 +132,7 @@ function ChecklistsWrapper() {
 const router = createBrowserRouter([
   { path: "/setup", element: <SetupPageWrapper /> },
   { path: "/signup", element: <Signup /> },
+  { path: "/invite", element: <Signup /> },
   { path: "/login", element: <LoginWrapper /> },
   { path: "/forgot-password", element: <ForgotPassword /> },
   { path: "/privacy", element: <PrivacyPolicy /> },

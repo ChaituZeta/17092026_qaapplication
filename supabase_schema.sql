@@ -104,6 +104,8 @@ ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS team TEXT DEFAULT 'HP-APJ'
 ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
 ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS last_login TEXT DEFAULT 'Never';
 ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS quick_login_enabled BOOLEAN DEFAULT TRUE;
+ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS invite_token TEXT;
+ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS invite_token_expires TIMESTAMPTZ;
 ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
 
 DO $$
@@ -120,6 +122,25 @@ END $$;
 ALTER TABLE public.app_users ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Public access for app_users" ON public.app_users;
 CREATE POLICY "Public access for app_users" ON public.app_users FOR ALL USING (true) WITH CHECK (true);
+
+-- 2.1 SECURE INVITATIONS TABLE (Unique invite tokens, strictly locks email to token)
+CREATE TABLE IF NOT EXISTS public.invitations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  token TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL,
+  name TEXT,
+  role TEXT DEFAULT 'user',
+  team TEXT DEFAULT 'HP-APJ',
+  status TEXT DEFAULT 'pending',
+  invited_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '7 days'),
+  accepted_at TIMESTAMPTZ
+);
+
+ALTER TABLE public.invitations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public access for invitations" ON public.invitations;
+CREATE POLICY "Public access for invitations" ON public.invitations FOR ALL USING (true) WITH CHECK (true);
 
 -- 3. TEAMS TABLE
 CREATE TABLE IF NOT EXISTS public.teams (

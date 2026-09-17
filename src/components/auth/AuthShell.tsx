@@ -9,7 +9,7 @@ export function AuthShell({ children }: AuthShellProps) {
   return (
     <div className="min-h-screen w-full flex flex-col lg:flex-row bg-[#080d1a] overflow-x-hidden font-sans">
       {/* LEFTSIDE: Bright, Fully Visible Image Showcase with Clean Top-Left Logo & Big Title with Points */}
-      <div className="w-full lg:w-[65%] xl:w-[68%] min-h-[520px] lg:min-h-screen relative flex flex-col justify-between p-6 sm:p-8 lg:p-12 xl:p-14 overflow-hidden text-white select-none">
+      <div className="w-full lg:w-[62%] xl:w-[65%] min-h-[220px] sm:min-h-[280px] lg:min-h-screen relative flex flex-col justify-between p-5 sm:p-8 lg:p-12 xl:p-14 overflow-hidden text-white select-none">
         {/* Full Bleed Image - Bright and Fully Visible without Darkening Overlays */}
         <div className="absolute inset-0 w-full h-full z-0 overflow-hidden bg-[#080d1a]">
           <img
@@ -23,11 +23,11 @@ export function AuthShell({ children }: AuthShellProps) {
             referrerPolicy="no-referrer"
           />
           {/* Subtle soft bottom shadow solely for text readability without darkening the rest of the image */}
-          <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-[#080d1a]/85 via-[#080d1a]/40 to-transparent pointer-events-none" />
+          <div className="absolute inset-x-0 bottom-0 h-32 sm:h-48 bg-gradient-to-t from-[#080d1a]/85 via-[#080d1a]/40 to-transparent pointer-events-none" />
         </div>
 
         {/* LEFT TOP CORNER: Official Zeta Logo - Clean without background, border, or pill container */}
-        <div className="relative z-30 self-start flex items-center gap-3 drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]">
+        <div className="relative z-30 self-start flex items-center gap-2.5 sm:gap-3 drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]">
           <div className="flex items-center">
             <svg
               width="111"
@@ -79,14 +79,14 @@ export function AuthShell({ children }: AuthShellProps) {
         </div>
 
         {/* BOTTOM CONTENT: Big Title and Points Directly Below Title */}
-        <div className="relative z-20 mt-auto pt-10 max-w-3xl text-left">
+        <div className="relative z-20 mt-auto pt-6 sm:pt-10 max-w-3xl text-left">
           {/* Big Simple Title */}
-          <h1 className="text-3xl sm:text-4xl lg:text-[44px] xl:text-[48px] font-extrabold text-white tracking-tight leading-[1.1] mb-3 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]">
+          <h1 className="text-2xl sm:text-3xl lg:text-[42px] xl:text-[46px] font-extrabold text-white tracking-tight leading-[1.15] mb-2 sm:mb-3 drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]">
             Empower your QA Workflow
           </h1>
 
           {/* Four Points directly bottom to title */}
-          <div className="flex flex-wrap items-center gap-x-3 sm:gap-x-4 gap-y-1.5 text-base sm:text-lg lg:text-xl font-bold tracking-tight text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]">
+          <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-4 gap-y-1 text-xs sm:text-base lg:text-lg xl:text-xl font-bold tracking-tight text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]">
             <span className="text-white">Simplified</span>
             <span className="text-[#3b82f6]">•</span>
             <span className="text-white">Automated</span>
@@ -98,10 +98,10 @@ export function AuthShell({ children }: AuthShellProps) {
         </div>
       </div>
 
-      {/* RIGHTSIDE: Compact White Login Card Column */}
-      <div className="w-full lg:w-[35%] xl:w-[32%] flex flex-col justify-between bg-white min-h-screen p-6 sm:p-8 lg:p-10 xl:p-12 relative z-20 border-l border-slate-200 shadow-2xl">
+      {/* RIGHTSIDE: Compact White Auth Card Column */}
+      <div className="w-full lg:w-[38%] xl:w-[35%] flex flex-col justify-between bg-white min-h-[calc(100vh-220px)] sm:min-h-[calc(100vh-280px)] lg:min-h-screen p-5 sm:p-7 lg:p-10 xl:p-12 relative z-20 border-l border-slate-200 shadow-2xl">
         {/* Centered Form Wrapper */}
-        <div className="my-auto w-full max-w-[360px] mx-auto py-6">
+        <div className="my-auto w-full max-w-[400px] mx-auto py-4 sm:py-6">
           {children}
         </div>
 

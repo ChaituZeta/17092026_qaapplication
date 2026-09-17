@@ -55,6 +55,17 @@ export interface ServerAppState {
     quick_login_enabled: boolean;
     last_login?: string;
   }>;
+  invitations?: Array<{
+    token: string;
+    email: string;
+    name?: string;
+    role?: string;
+    team?: string;
+    status: "pending" | "accepted" | "expired";
+    created_at: string;
+    expires_at?: string;
+    accepted_at?: string;
+  }>;
 }
 
 export const defaultAppState: ServerAppState = {

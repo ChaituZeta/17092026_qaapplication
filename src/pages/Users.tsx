@@ -114,10 +114,8 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
         body: JSON.stringify({ user: newUser })
       });
 
-      // 3. Send email invitation using current assigned domain
+      // 3. Send email invitation using secure unique token
       const dynamicOrigin = window.location.origin;
-      const inviteUrl = `${dynamicOrigin}/signup?email=${encodeURIComponent(cleanEmail)}`;
-      setCreatedInviteUrl(inviteUrl);
 
       const inviteRes = await fetch("/api/invite", {
         method: "POST",
@@ -127,24 +125,25 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
           email: newUser.email,
           role: newUser.role,
           team: newUser.team,
-          inviteUrl,
           origin: dynamicOrigin
         })
       });
 
       const inviteData = await inviteRes.json().catch(() => ({}));
+      const effectiveInviteUrl = inviteData.inviteUrl || `${dynamicOrigin}/signup?token=${inviteData.token || ''}`;
+      setCreatedInviteUrl(effectiveInviteUrl);
 
       if (inviteRes.ok && inviteData.success) {
         setModalMessage({ 
           type: "success", 
-          text: `Invitation email dispatched successfully to ${cleanEmail}!` 
+          text: `Invitation email dispatched successfully to ${cleanEmail} with a secure unique token link!` 
         });
         fetchUsers();
       } else {
         const errorMsg = inviteData.error || inviteData.message || "Failed to dispatch email via SMTP.";
         setModalMessage({ 
           type: "warning", 
-          text: `User created, but email delivery issue: ${errorMsg}. You can share the signup link directly below:` 
+          text: `User created, but email delivery issue: ${errorMsg}. You can share the secure token link directly below:` 
         });
         fetchUsers();
       }
@@ -152,7 +151,7 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
       console.warn("Email invite sending notice:", err);
       setModalMessage({ 
         type: "warning", 
-        text: `User created, but email dispatch failed (${err.message}). You can share the signup link directly below:` 
+        text: `User created, but email dispatch failed (${err.message}). You can share the secure signup link directly below:` 
       });
       fetchUsers();
     } finally {
@@ -161,14 +160,27 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
   };
 
   const handleCopyUserSignupLink = async (u: AppUser) => {
-    const signupUrl = `${window.location.origin}/signup?email=${encodeURIComponent(u.email.toLowerCase())}`;
     try {
+      // Request secure unique invitation token for this user
+      const res = await fetch("/api/invite/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: u.email,
+          name: u.name,
+          role: u.role,
+          team: u.team,
+          origin: window.location.origin
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      const signupUrl = data.inviteUrl || `${window.location.origin}/signup?token=${data.token || ''}`;
       await navigator.clipboard.writeText(signupUrl);
       setCopiedEmail(u.email);
       setTimeout(() => setCopiedEmail(null), 2500);
     } catch {
       // Fallback
-      window.prompt("Copy signup link for " + u.email, signupUrl);
+      window.prompt("Secure signup link for " + u.email, `${window.location.origin}/signup`);
     }
   };
 
@@ -177,7 +189,6 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
     setActionFeedback(null);
     const dynamicOrigin = window.location.origin;
     const cleanEmail = u.email.trim().toLowerCase();
-    const inviteUrl = `${dynamicOrigin}/signup?email=${encodeURIComponent(cleanEmail)}`;
 
     try {
       const res = await fetch("/api/invite", {
@@ -188,14 +199,13 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
           email: cleanEmail,
           role: u.role,
           team: u.team,
-          inviteUrl,
           origin: dynamicOrigin
         })
       });
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data.success) {
-        setActionFeedback({ email: u.email, text: "Invitation email sent!", success: true });
+        setActionFeedback({ email: u.email, text: "Invitation email sent with unique secure token!", success: true });
       } else {
         setActionFeedback({ 
           email: u.email, 
@@ -619,8 +629,8 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
               <div className="mt-3 p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-semibold text-slate-700 flex items-center gap-1.5">
-                    <LinkIcon className="w-3.5 h-3.5 text-[#2b61d6]" />
-                    Signup Link (Current Domain)
+                    <Shield className="w-3.5 h-3.5 text-emerald-600" />
+                    Secure Invitation Link (Invite-Only & Locked)
                   </span>
                   <button
                     type="button"

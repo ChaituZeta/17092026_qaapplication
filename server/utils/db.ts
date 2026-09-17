@@ -42,7 +42,8 @@ export function readEnvDirectly(): { exists: boolean; env: Record<string, string
 }
 
 /**
- * Inspects whether the .env file exists and contains all required DB credentials.
+ * Inspects whether the database credentials exist and are configured.
+ * Works seamlessly in local environments (.env) and cloud/serverless environments (process.env on Vercel, etc.)
  */
 export const checkEnvDbCredentials = (): {
   envExists: boolean;
@@ -64,24 +65,27 @@ export const checkEnvDbCredentials = (): {
   if (!anonKey || anonKey.length < 15 || anonKey === "placeholder_key") {
     missing.push("VITE_SUPABASE_ANON_KEY");
   }
+
+  // Basic database connectivity is valid if URL and Anon key are provided
+  const isConfigured = missing.length === 0;
+
+  // Track service role key if missing
   if (!serviceKey || serviceKey.length < 15 || serviceKey === "placeholder_key") {
     missing.push("SUPABASE_SERVICE_ROLE_KEY");
   }
 
-  const isConfigured = missing.length === 0;
-
   return {
-    envExists: exists,
+    envExists: exists || Boolean(url),
     isConfigured,
     missingCredentials: missing,
     url: isConfigured ? url : (url.startsWith("https://") ? url : ""),
     anonKey: isConfigured ? anonKey : (anonKey.length >= 15 ? anonKey : ""),
-    serviceKey: isConfigured ? serviceKey : (serviceKey.length >= 15 ? serviceKey : (anonKey.length >= 15 ? anonKey : ""))
+    serviceKey: (serviceKey && serviceKey.length >= 15) ? serviceKey : (anonKey.length >= 15 ? anonKey : "")
   };
 };
 
 /**
- * Gets Supabase URL strictly from configured .env. Returns empty string if not configured.
+ * Gets Supabase URL strictly from configured credentials. Returns empty string if not configured.
  */
 export const getSupabaseUrl = (): string => {
   const { isConfigured, url } = checkEnvDbCredentials();
@@ -89,7 +93,7 @@ export const getSupabaseUrl = (): string => {
 };
 
 /**
- * Gets Supabase Anon Key strictly from configured .env. Returns empty string if not configured.
+ * Gets Supabase Anon Key strictly from configured credentials. Returns empty string if not configured.
  */
 export const getSupabaseAnonKey = (): string => {
   const { isConfigured, anonKey } = checkEnvDbCredentials();
@@ -97,11 +101,11 @@ export const getSupabaseAnonKey = (): string => {
 };
 
 /**
- * Gets Supabase Service Role Key strictly from configured .env. Returns empty string if not configured.
+ * Gets Supabase Service Role Key (or falls back to Anon Key). Returns empty string if not configured.
  */
 export const getSupabaseServiceKey = (): string => {
-  const { isConfigured, serviceKey } = checkEnvDbCredentials();
-  return isConfigured ? serviceKey : "";
+  const { isConfigured, serviceKey, anonKey } = checkEnvDbCredentials();
+  return isConfigured ? (serviceKey || anonKey) : "";
 };
 
 /**
@@ -177,18 +181,5 @@ export const clearDatabaseCredentials = (): void => {
     SUPABASE_SERVICE_ROLE_KEY: ""
   });
 };
-
-// Purge any container-injected DB credentials if .env does not have them configured
-(() => {
-  const check = checkEnvDbCredentials();
-  if (!check.isConfigured) {
-    delete process.env.VITE_SUPABASE_URL;
-    delete process.env.SUPABASE_URL;
-    delete process.env.VITE_SUPABASE_ANON_KEY;
-    delete process.env.SUPABASE_ANON_KEY;
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-    delete process.env.VITE_SUPABASE_SERVICE_ROLE_KEY;
-  }
-})();
 
 export { getAppCredentialFromDB } from "./credentials.ts";
