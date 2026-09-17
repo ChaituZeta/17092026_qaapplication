@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { clearPostLoginRedirectUrl } from "@/lib/url-redirect";
 import { clearActiveSession, getActiveSession } from "@/lib/session";
+import { clearPersistedActiveRoute } from "@/lib/route-persistence";
 
 export async function logoutUser(): Promise<void> {
   // 0. Log logout event to server audit logs with IP
@@ -23,8 +24,9 @@ export async function logoutUser(): Promise<void> {
   // 1. Clear in-memory session
   clearActiveSession();
 
-  // 2. Clear redirect history from memory
+  // 2. Clear redirect history & persisted route state
   clearPostLoginRedirectUrl();
+  clearPersistedActiveRoute();
 
   // 3. Sign out explicitly from Supabase Auth
   try {

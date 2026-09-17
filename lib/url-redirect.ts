@@ -5,6 +5,8 @@
  * ensuring seamless redirection after login.
  */
 
+import { getPersistedActiveRoute } from "./route-persistence";
+
 const STORAGE_REDIRECT_KEY = "hpqa_redirect_url";
 let inMemoryRedirectUrl: string | null = null;
 
@@ -16,7 +18,16 @@ export function isValidRedirectUrl(url?: string | null): boolean {
   const trimmed = url.trim();
   if (!trimmed.startsWith("/")) return false;
   if (trimmed.startsWith("//")) return false; // Prevents protocol-relative cross-domain redirects
-  if (trimmed.startsWith("/login") || trimmed.startsWith("/signup")) return false;
+  if (
+    trimmed.startsWith("/login") || 
+    trimmed.startsWith("/signup") || 
+    trimmed.startsWith("/invite") || 
+    trimmed.startsWith("/setup") || 
+    trimmed.startsWith("/forgot-password") ||
+    trimmed.startsWith("/reset-password")
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -69,6 +80,20 @@ export function getPostLoginRedirectUrl(): string {
     // 3. Check in-memory variable
     if (inMemoryRedirectUrl && isValidRedirectUrl(inMemoryRedirectUrl)) {
       return inMemoryRedirectUrl;
+    }
+
+    // 4. Check current location path if it's already on a valid internal route (e.g. /users, /reports)
+    if (typeof window !== "undefined") {
+      const currentPath = window.location.pathname + window.location.search + window.location.hash;
+      if (currentPath && currentPath !== "/" && isValidRedirectUrl(currentPath)) {
+        return currentPath;
+      }
+    }
+
+    // 5. Check persisted last active route (e.g. /campaigns/new?id=..., /users, /settings)
+    const persisted = getPersistedActiveRoute();
+    if (persisted && persisted !== "/" && isValidRedirectUrl(persisted)) {
+      return persisted;
     }
   } catch (e) {
     console.warn("[UrlRedirect] Error reading post-login redirect URL:", e);

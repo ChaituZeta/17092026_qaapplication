@@ -21,6 +21,7 @@ import { RecycleBin } from "./pages/RecycleBin";
 import { SetupPage } from "./pages/SetupPage";
 import { PrivacyPolicy } from "./pages/PrivacyPolicy";
 import { SessionManager } from "./components/SessionManager";
+import { rehydratePreRouterUrl, RouteHydrator } from "@/lib/route-persistence";
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -64,6 +65,7 @@ function ProtectedRoute() {
 
   return (
     <SessionManager>
+      <RouteHydrator />
       <AppLayout role={userRole} userEmail={userEmail} />
     </SessionManager>
   );
@@ -129,6 +131,9 @@ function ChecklistsWrapper() {
   return <Checklists role={userRole} />;
 }
 
+// Synchronously re-hydrate the browser URL before router instantiation
+rehydratePreRouterUrl();
+
 const router = createBrowserRouter([
   { path: "/setup", element: <SetupPageWrapper /> },
   { path: "/signup", element: <Signup /> },
@@ -160,6 +165,9 @@ const router = createBrowserRouter([
 ]);
 
 export default function App() {
+  const initialDbConnected = typeof window !== "undefined" && (
+    localStorage.getItem("hp_qa_db_connected") === "true" || isSupabaseConfigured()
+  );
   const initialSession = getActiveSession();
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => Boolean(initialSession?.email));
   const [userRole, setUserRole] = useState<string>(() => {
@@ -167,8 +175,8 @@ export default function App() {
   });
   const [userEmail, setUserEmail] = useState<string>(() => initialSession?.email || "");
   const [isLoading, setIsLoading] = useState<boolean>(() => !initialSession?.email);
-  const [isCheckingSetup, setIsCheckingSetup] = useState<boolean>(true);
-  const [dbConnected, setDbConnected] = useState<boolean>(false);
+  const [isCheckingSetup, setIsCheckingSetup] = useState<boolean>(() => !initialDbConnected);
+  const [dbConnected, setDbConnected] = useState<boolean>(() => Boolean(initialDbConnected));
   const sessionCheckSeq = useRef(0);
 
   const checkAuthSession = useCallback(async () => {
@@ -203,7 +211,7 @@ export default function App() {
       setUserRole("user");
       setIsLoading(false);
     }
-  }, [dbConnected]);
+  }, []);
 
   // Initial Startup Check: inspect whether .env containing required database credentials exists
   useEffect(() => {
@@ -216,13 +224,16 @@ export default function App() {
 
         if (status.isConfigured && status.isConnected) {
           setDbConnected(true);
+          try {
+            localStorage.setItem("hp_qa_db_connected", "true");
+          } catch {}
           checkAuthSession();
         } else {
           setDbConnected(false);
         }
       } catch (err) {
         console.warn("[App] Setup status check failed:", err);
-        if (isMounted) {
+        if (isMounted && !initialDbConnected) {
           setDbConnected(false);
         }
       } finally {
@@ -245,12 +256,10 @@ export default function App() {
       window.removeEventListener("focus", verifySetup);
       window.removeEventListener("database_config_changed", handleDbConfigChange);
     };
-  }, [checkAuthSession]);
+  }, [checkAuthSession, initialDbConnected]);
 
   useEffect(() => {
     if (!dbConnected) {
-      setIsAuthenticated(false);
-      setIsLoading(false);
       return;
     }
 
@@ -328,7 +337,9 @@ export default function App() {
     } catch {}
     checkAuthSession();
     const session = getActiveSession();
-    const destination = session?.email ? "/" : "/login";
+    const currentPath = typeof window !== "undefined" ? (window.location.pathname + window.location.search + window.location.hash) : "";
+    const isTargetValid = currentPath && !currentPath.startsWith("/setup") && !currentPath.startsWith("/login") && !currentPath.startsWith("/signup") && !currentPath.startsWith("/invite");
+    const destination = isTargetValid ? currentPath : (session?.email ? "/" : "/login");
     window.location.assign(destination);
   };
 

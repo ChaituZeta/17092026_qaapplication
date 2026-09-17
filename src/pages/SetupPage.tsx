@@ -267,7 +267,9 @@ export function SetupPage({ onComplete }: SetupPageProps) {
     }
 
     const session = getActiveSession();
-    const destination = session?.email ? "/" : "/login";
+    const currentPath = typeof window !== "undefined" ? (window.location.pathname + window.location.search + window.location.hash) : "";
+    const isTargetValid = currentPath && !currentPath.startsWith("/setup") && !currentPath.startsWith("/login") && !currentPath.startsWith("/signup") && !currentPath.startsWith("/invite");
+    const destination = isTargetValid ? currentPath : (session?.email ? "/" : "/login");
     window.location.assign(destination);
   };
 

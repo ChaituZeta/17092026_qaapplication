@@ -32,23 +32,18 @@ let currentSession: ActiveUserSession | null = (() => {
  * Gets the current active session.
  */
 export function getActiveSession(): ActiveUserSession | null {
-  if (!isSupabaseConfigured()) {
-    currentSession = null;
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.removeItem(STORAGE_KEY);
-      } catch (e) {}
-    }
-    return null;
+  if (currentSession && currentSession.email) {
+    return currentSession;
   }
 
-  if (!currentSession && typeof window !== "undefined") {
+  if (typeof window !== "undefined") {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (parsed && parsed.email) {
           currentSession = parsed;
+          return currentSession;
         }
       }
     } catch (e) {}
@@ -92,11 +87,7 @@ export function setActiveSession(session: ActiveUserSession | null): void {
  * Resolves authentication status from memory, storage, server session endpoint, or Supabase Auth.
  */
 export async function resolveCurrentSession(): Promise<ActiveUserSession | null> {
-  if (!isSupabaseConfigured()) {
-    return null;
-  }
-
-  // 1. If session is already active in memory or localStorage, prioritize it
+  // 1. If session is already active in memory or localStorage, prioritize it immediately
   const active = getActiveSession();
   if (active && active.email) {
     // Check DB for latest role/status if configured
