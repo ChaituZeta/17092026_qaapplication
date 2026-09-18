@@ -8,6 +8,7 @@ import { BrowserQAWorkspace } from "@/src/components/QAWorkspace";
 import { TagInspection } from "@/src/components/QAWorkspace/TagInspection";
 import { VisualComparison } from "@/src/components/QAWorkspace/VisualComparison";
 import { EnglishTextAnalysis } from "@/src/components/QAWorkspace/EnglishTextAnalysis";
+import { ErrorBoundary } from "@/src/components/common/ErrorBoundary";
 import { CampaignSetupSkeleton } from "@/src/components/QAWorkspace/Skeletons";
 import { exportQAVerificationReceiptPDF } from "@/lib/export-qa-pdf";
 import { exportQAChecklistToExcel } from "@/lib/export-qa-excel";
@@ -198,6 +199,7 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
   const [isDiscarding, setIsDiscarding] = useState(false);
   const hasMovedToStage2Ref = useRef<boolean>(false);
   const isDiscardingRef = useRef<boolean>(false);
+  const isNewCampaignInitializedRef = useRef<boolean>(false);
   const pendingNavUrlRef = useRef<string | null>(null);
 
   // Multi-Agent State
@@ -292,9 +294,57 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
     } = {}
   ) => {
     const data = watch();
+    const hasExplicitId = !!(campaignIdRef.current || editId);
+    const hasValidName = !!(data.name && data.name.trim().length >= 2);
+
+    // If there is no existing campaign record (new campaign) AND no valid campaign name has been entered yet,
+    // only save the active workspace draft to local session snapshot (do NOT create duplicate untitled/draft records in Supabase).
+    if (!hasExplicitId && !hasValidName && overrides.status !== "Draft") {
+      if (!overrides.skipActiveSnapshot && !isDiscardingRef.current) {
+        const effectiveVisualChecks = overrides.visualChecks !== undefined ? overrides.visualChecks : visualChecks;
+        const baseAnswers = overrides.checklistAnswers !== undefined ? overrides.checklistAnswers : (checklistAnswersRef.current || checklistAnswers);
+        const synchronizedAnswers = {
+          ...baseAnswers,
+          visual_desktop_light: { ...(baseAnswers.visual_desktop_light || {}), status: effectiveVisualChecks.desktopLight ? "Checked" : null },
+          visual_mobile_light: { ...(baseAnswers.visual_mobile_light || {}), status: effectiveVisualChecks.mobileLight ? "Checked" : null },
+          visual_desktop_dark: { ...(baseAnswers.visual_desktop_dark || {}), status: effectiveVisualChecks.desktopDark ? "Checked" : null },
+          visual_mobile_dark: { ...(baseAnswers.visual_mobile_dark || {}), status: effectiveVisualChecks.mobileDark ? "Checked" : null },
+          visual_litmus: { ...(baseAnswers.visual_litmus || {}), status: effectiveVisualChecks.litmus ? "Checked" : null },
+          _visualChecks: effectiveVisualChecks
+        };
+        saveActiveQASnapshot({
+          campaignId: null,
+          currentStep: overrides.currentStep !== undefined ? overrides.currentStep : currentStep,
+          formValues: {
+            name: data.name || "",
+            team: data.team || userTeam || "HP-APJ",
+            country: data.country || "",
+            versionName: data.versionName || "",
+            folder_id: data.folder_id || targetFolderParam || "2026",
+            webViewUrl: data.webViewUrl || "",
+            htmlSource: data.htmlSource || "",
+            figmaUrl: data.figmaUrl || "",
+            litmusUrl: data.litmusUrl || ""
+          },
+          checklistAnswers: synchronizedAnswers,
+          visualChecks: effectiveVisualChecks,
+          status: "Draft",
+          reviewNote: overrides.reviewNote !== undefined ? overrides.reviewNote : reviewNote,
+          designChoice,
+          outlookSubject: overrides.outlookSubject !== undefined ? overrides.outlookSubject : (outlookSubject || extractedSubject || undefined),
+          outlookFileName: overrides.outlookFileName !== undefined ? overrides.outlookFileName : (outlookFileName || undefined),
+          outlookExtractedHtml: overrides.outlookExtractedHtml !== undefined ? overrides.outlookExtractedHtml : (outlookExtractedHtml || undefined),
+          mockupDataUrl: mockupPreviewUrl || undefined
+        });
+      }
+      return null;
+    }
+
+    const now = new Date();
+    const timeSuffix = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
     const effectiveName = (data.name && data.name.trim().length >= 2)
       ? data.name.trim()
-      : (campaignIdRef.current ? "Draft Campaign" : `Draft Campaign ${new Date().toLocaleDateString('en-GB')}`);
+      : (campaignIdRef.current ? "Draft Campaign" : `Draft Campaign ${now.toLocaleDateString('en-GB')} (${timeSuffix})`);
 
     try {
       setSyncStatus("syncing");
@@ -356,9 +406,18 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
         setCampaignStatus(record.status || "In Progress");
         setDraftSavedAt(new Date().toLocaleTimeString());
 
+        if (record.name && record.name !== data.name) {
+          setValue('name', record.name, { shouldValidate: false, shouldDirty: false });
+        }
+
         const effectiveStep = overrides.currentStep !== undefined ? overrides.currentStep : currentStep;
         if (!overrides.skipUrlSync && !isDiscardingRef.current) {
           setSearchParams((prev) => {
+            const curId = prev.get("id");
+            const curStep = prev.get("step");
+            if (curId === record.id && curStep === String(effectiveStep)) {
+              return prev;
+            }
             const next = new URLSearchParams(prev);
             next.set("id", record.id);
             next.set("step", String(effectiveStep));
@@ -377,7 +436,7 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
           campaignId: record?.id || campaignIdRef.current || editId || null,
           currentStep: overrides.currentStep !== undefined ? overrides.currentStep : currentStep,
           formValues: {
-            name: data.name,
+            name: record?.name || data.name,
             team: data.team,
             country: data.country,
             versionName: data.versionName,
@@ -400,9 +459,9 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
       }
 
       return record;
-    } catch (e) {
-      console.error("[AutoSave] Error saving campaign state:", e);
-      setSyncStatus("offline");
+    } catch (e: any) {
+      console.warn("[AutoSave] Auto-save notice:", e?.message || e);
+      setSyncStatus(navigator.onLine ? "synced" : "offline");
       return null;
     }
   };
@@ -644,7 +703,10 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
   });
 
   // Derive available checklists for the team
-  const availableTeamChecklists = teamChecklists.filter((c: any) => c.team === values?.team);
+  const currentFormTeam = values?.team;
+  const availableTeamChecklists = React.useMemo(() => {
+    return teamChecklists.filter((c: any) => c.team === currentFormTeam);
+  }, [teamChecklists, currentFormTeam]);
 
 
   const isFQA = React.useMemo(() => {
@@ -690,21 +752,29 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
 
 
   // Sync campaignChecklists from platform master when team changes on a new campaign
+  const lastSyncedTeamRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!isEditMode && availableTeamChecklists.length > 0) {
-      // Use selectedChecklistId if present, else default to the first one
-      const targetTemplate = selectedChecklistId 
-        ? availableTeamChecklists.find((c: any) => c.id === selectedChecklistId)
-        : availableTeamChecklists[0];
-        
-      if (targetTemplate) {
-        setCampaignChecklists(ensureVisualCheckpointsInList(targetTemplate.items || []));
-        if (!selectedChecklistId && targetTemplate.id) {
-          setSelectedChecklistId(targetTemplate.id);
-        }
+    if (isEditMode || !availableTeamChecklists.length || !currentFormTeam) return;
+    if (lastSyncedTeamRef.current === currentFormTeam && campaignChecklists.length > 4) return;
+    lastSyncedTeamRef.current = currentFormTeam;
+
+    const targetTemplate = selectedChecklistId 
+      ? availableTeamChecklists.find((c: any) => c.id === selectedChecklistId)
+      : availableTeamChecklists[0];
+      
+    if (targetTemplate && targetTemplate.id) {
+      if (!selectedChecklistId) {
+        setSelectedChecklistId(targetTemplate.id);
       }
+      const updatedItems = ensureVisualCheckpointsInList(targetTemplate.items || []);
+      setCampaignChecklists((prev) => {
+        if (prev && prev.length === updatedItems.length && prev[0]?.id === updatedItems[0]?.id) {
+          return prev;
+        }
+        return updatedItems;
+      });
     }
-  }, [values?.team, teamChecklists, isEditMode, selectedChecklistId, availableTeamChecklists]);
+  }, [currentFormTeam, isEditMode, selectedChecklistId, availableTeamChecklists, campaignChecklists.length]);
 
   useEffect(() => {
     const fetchUserTeam = async () => {
@@ -954,6 +1024,7 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
 
   useEffect(() => {
     if (editId) {
+      isNewCampaignInitializedRef.current = false;
       if (initialLoadedIdRef.current === editId) {
         // Already loaded or saved locally in this session - avoid resetting user's active form edits
         return;
@@ -1105,6 +1176,13 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
       const activeSnapshot = getActiveQASnapshot();
 
       if (activeSnapshot && activeSnapshot.formValues && (activeSnapshot.formValues.name || activeSnapshot.formValues.htmlSource)) {
+        const snapshotKey = "SNAPSHOT_" + (activeSnapshot.campaignId || "TEMP");
+        if (initialLoadedIdRef.current === snapshotKey) {
+          return;
+        }
+        initialLoadedIdRef.current = snapshotKey;
+        isNewCampaignInitializedRef.current = true;
+
         setValue('name', activeSnapshot.formValues.name || "");
         setValue('team', activeSnapshot.formValues.team || userTeam || "HP-APJ");
         setValue('country', activeSnapshot.formValues.country || "");
@@ -1120,11 +1198,10 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
           checklistAnswersRef.current = activeSnapshot.checklistAnswers;
         }
         if (activeSnapshot.visualChecks) {
-          setVisualChecks(activeSnapshot.visualChecks);
+          setVisualChecks({ desktopLight: false, mobileLight: false, desktopDark: false, mobileDark: false, litmus: false, ...activeSnapshot.visualChecks });
         }
         if (activeSnapshot.currentStep) {
           setCurrentStep(activeSnapshot.currentStep);
-          syncUrlState(activeSnapshot.currentStep);
         }
         if (activeSnapshot.reviewNote) {
           setReviewNote(activeSnapshot.reviewNote);
@@ -1153,9 +1230,18 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
         return;
       }
 
-      // New Campaign: Reset all state when there is no editId and no active snapshot to restore
+      // New Campaign: Reset all state once when there is no editId and no active snapshot to restore
+      if (isNewCampaignInitializedRef.current) {
+        // Already initialized, don't wipe user's active inputs on subsequent re-renders
+        if (userTeam && !watch().team) {
+          setValue('team', userTeam);
+        }
+        return;
+      }
+      isNewCampaignInitializedRef.current = true;
+      initialLoadedIdRef.current = "NEW";
+
       campaignIdRef.current = null;
-      initialLoadedIdRef.current = null;
       hasMovedToStage2Ref.current = false;
       isDiscardingRef.current = false;
       setIsEditMode(false);
@@ -1195,52 +1281,6 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
     }
   }, [editId, setValue, reset, targetFolderParam, teamChecklists, userTeam]);
 
-  // Dedicated Auto-Save: Saves draft to Supabase DB every 30 seconds only for named new campaigns
-  useEffect(() => {
-    const saveDraftToDatabase = async () => {
-      try {
-        const formData = watch();
-        if (!editId && !campaignIdRef.current && formData.name && formData.name.trim().length >= 2 && formData.country) {
-          const timeStr = new Date().toLocaleTimeString();
-          const draftRecord = await saveCampaignRecord({
-            name: formData.name.trim(),
-            team: formData.team || "HP-APJ",
-            country: formData.country,
-            versionName: formData.versionName || "Standard",
-            folder_id: formData.folder_id || "2026",
-            webViewUrl: formData.webViewUrl || "",
-            htmlSource: formData.htmlSource || "",
-            figmaUrl: designChoice === "figma" ? (formData.figmaUrl || "") : "",
-            litmusUrl: formData.litmusUrl || "",
-            status: "Draft",
-            userEmail: userEmail || "",
-            createdBy: userEmail || "QA User",
-            checklists: campaignChecklists,
-            checklistAnswers: checklistAnswersRef.current || checklistAnswers,
-            currentStep: currentStep,
-            reviewNote: reviewNote || "",
-            outlookFileName: outlookFileName || "",
-            outlookExtractedHtml: outlookExtractedHtml || "",
-            outlookSubject: outlookSubject || "",
-            mockupDataUrl: mockupPreviewUrl || ""
-          });
-
-          if (draftRecord && draftRecord.id) {
-            campaignIdRef.current = draftRecord.id;
-          }
-          setDraftSavedAt(timeStr);
-          console.log(`[AutoSave 30s] Campaign draft saved to database at ${timeStr}`);
-        }
-      } catch (err) {
-        console.warn("[AutoSave 30s] Auto-save notice:", err);
-      }
-    };
-
-    if (isCampaignApproved) return;
-    const interval = setInterval(saveDraftToDatabase, 30000);
-    return () => clearInterval(interval);
-  }, [watch, editId, designChoice, outlookFileName, outlookExtractedHtml, outlookSubject, mockupPreviewUrl, reviewNote, currentStep, userEmail, campaignChecklists, checklistAnswers, isCampaignApproved]);
-
   // Real-time debounced auto-save to database / storage engine
   useEffect(() => {
     if (isCampaignApproved) return;
@@ -1266,7 +1306,7 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
       clearTimeout(timeoutId);
       clearInterval(intervalId);
     };
-  }, [watch, editId, campaignStatus, designChoice, userEmail, currentStep, outlookFileName, outlookExtractedHtml, outlookSubject, isCampaignApproved]);
+  }, [watch, editId, isCampaignApproved]);
 
   // Real-time auto-save whenever checklist answers change
   const isChecklistMountedRef = useRef(false);
@@ -2801,6 +2841,7 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
             
             {currentStep === 2 && (
               <div className="flex flex-col flex-1 min-h-[700px] border border-slate-200 rounded-xl shadow-xs bg-white overflow-hidden">
+                <ErrorBoundary level="widget" componentName="Visual Comparison Canvas">
                 <VisualComparison 
                   webViewUrl={resolvedWebViewUrl || values.webViewUrl} 
                   figmaUrl={values.figmaUrl} 
@@ -2811,7 +2852,8 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
                   initialMsgSubject={outlookSubject || extractedSubject}
                   visualChecks={visualChecks}
                   onVisualChecksChange={(checks) => {
-                    setVisualChecks(checks);
+                    const completeChecks = { desktopLight: false, mobileLight: false, desktopDark: false, mobileDark: false, litmus: false, ...checks };
+                    setVisualChecks(completeChecks);
                     const currentAnswers = checklistAnswersRef.current || checklistAnswers;
                     const updatedAnswers = {
                       ...currentAnswers,
@@ -2856,6 +2898,7 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
                     });
                   }}
                 />
+                </ErrorBoundary>
               </div>
             )}
             
@@ -2864,19 +2907,23 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
                 "flex flex-col flex-1 min-h-[700px] border border-slate-200 rounded-xl shadow-xs bg-white transition-all duration-300",
                 fullScreenTarget === "step3" ? "fixed inset-0 z-[100] m-4 border-2 shadow-2xl" : ""
               )}>
-                <TagInspection htmlSource={processedHtmlSource || values.htmlSource} subjectLine={extractedSubject} viewOnlineUrl={resolvedWebViewUrl || values.webViewUrl || values.litmusUrl} />
+                <ErrorBoundary level="widget" componentName="HTML & Tracking Tag Inspector">
+                  <TagInspection htmlSource={processedHtmlSource || values.htmlSource} subjectLine={extractedSubject} viewOnlineUrl={resolvedWebViewUrl || values.webViewUrl || values.litmusUrl} />
+                </ErrorBoundary>
               </div>
             )}
             
             {currentStep === 4 && (
               <div className="space-y-4">
                 <div className="flex flex-col min-h-[600px] border border-slate-200 rounded-xl shadow-xs bg-white overflow-hidden">
-                  <BrowserQAWorkspace 
-                    htmlSource={processedHtmlSource || values.htmlSource} 
-                    webViewUrl={resolvedWebViewUrl || values.webViewUrl} 
-                    country={values.country}
-                    versionName={values.versionName}
-                  />
+                  <ErrorBoundary level="widget" componentName="Browser Rendering & QA Workspace">
+                    <BrowserQAWorkspace 
+                      htmlSource={processedHtmlSource || values.htmlSource} 
+                      webViewUrl={resolvedWebViewUrl || values.webViewUrl} 
+                      country={values.country}
+                      versionName={values.versionName}
+                    />
+                  </ErrorBoundary>
                 </div>
                 <Card className="shadow-xs border-slate-200">
                   <CardHeader className="border-b border-slate-100 bg-white rounded-t-xl py-4">
@@ -2906,11 +2953,13 @@ export function CampaignSetup({ userEmail = "", userRole = "user" }: { userEmail
             )}
 
             {currentStep === 5 && (
-              <EnglishTextAnalysis 
-                htmlSource={processedHtmlSource || values.htmlSource} 
-                webViewUrl={resolvedWebViewUrl || values.webViewUrl}
-                onFixApplied={(updatedHtml) => setValue("htmlSource", updatedHtml, { shouldValidate: true })}
-              />
+              <ErrorBoundary level="widget" componentName="Content & Typography Analysis">
+                <EnglishTextAnalysis 
+                  htmlSource={processedHtmlSource || values.htmlSource} 
+                  webViewUrl={resolvedWebViewUrl || values.webViewUrl}
+                  onFixApplied={(updatedHtml) => setValue("htmlSource", updatedHtml, { shouldValidate: true })}
+                />
+              </ErrorBoundary>
             )}
 
             {currentStep === totalSteps && (

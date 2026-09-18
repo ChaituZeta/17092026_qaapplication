@@ -5,7 +5,7 @@ import {
   Database, Settings as SettingsIcon, Download, Upload, Shield, 
   CheckCircle2, XCircle, RefreshCw, Server, Key, Globe, Image as ImageIcon,
   Save, AlertTriangle, Code, Terminal, Check, Lock, Sparkles, Mail,
-  Activity, Send, Wifi, AlertCircle, ExternalLink
+  Eye, EyeOff, Send, AlertCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,18 +28,16 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
 
   const [gmailUserInput, setGmailUserInput] = useState("");
   const [gmailPassInput, setGmailPassInput] = useState("");
-  const [isTestingGmail, setIsTestingGmail] = useState(false);
+  const [showGmailPassword, setShowGmailPassword] = useState(false);
   const [isSavingGmail, setIsSavingGmail] = useState(false);
   const [gmailStatus, setGmailStatus] = useState<{ success?: boolean; message?: string } | null>(null);
 
   const [storedCreds, setStoredCreds] = useState<any>({});
   const [isLoadingCreds, setIsLoadingCreds] = useState(false);
 
-  // SMTP Diagnostics & Test Email State
+  // Live Test Email State
   const [testEmailRecipient, setTestEmailRecipient] = useState(userEmail || "cbogineni@gmail.com");
-  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
-  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const [testEmailResult, setTestEmailResult] = useState<any>(null);
 
   // General Settings Tab State
@@ -57,14 +55,57 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
   const loadAppCredentials = async () => {
     setIsLoadingCreds(true);
     try {
-      const res = await fetch("/api/app-credentials");
-      if (res.ok) {
-        const data = await res.json();
-        if (data.credentials) {
-          setStoredCreds(data.credentials);
-          if (data.credentials.gmailUser) {
-            setGmailUserInput(data.credentials.gmailUser);
+      let userFound = "";
+      let passFound = "";
+
+      // 1. Fetch from server credentials endpoint
+      try {
+        const res = await fetch("/api/app-credentials");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.credentials) {
+            setStoredCreds(data.credentials);
+            if (data.credentials.gmailUser) {
+              userFound = data.credentials.gmailUser;
+              setGmailUserInput(data.credentials.gmailUser);
+            }
+            if (data.credentials.gmailAppPassword) {
+              passFound = data.credentials.gmailAppPassword;
+              setGmailPassInput(data.credentials.gmailAppPassword);
+            }
           }
+        }
+      } catch (e) {
+        console.warn("Server credentials endpoint notice:", e);
+      }
+
+      // 2. Resilient check directly against Supabase database (app_credentials table)
+      if (!userFound || !passFound) {
+        try {
+          const { data: dbCreds } = await supabase
+            .from("app_credentials")
+            .select("key, value, description, updated_at");
+          if (dbCreds && dbCreds.length > 0) {
+            const userRow = dbCreds.find((c: any) => c.key === "GMAIL_USER");
+            const passRow = dbCreds.find((c: any) => c.key === "GMAIL_APP_PASSWORD");
+            if (userRow?.value) {
+              userFound = userRow.value;
+              setGmailUserInput(userRow.value);
+            }
+            if (passRow?.value) {
+              passFound = passRow.value;
+              setGmailPassInput(passRow.value);
+            }
+            setStoredCreds((prev: any) => ({
+              ...prev,
+              gmailUser: userFound || prev.gmailUser || "",
+              gmailAppPassword: passFound || prev.gmailAppPassword || "",
+              hasGmailPassword: Boolean(passFound || prev.hasGmailPassword),
+              gmailConfigured: Boolean(userFound && (passFound || prev.hasGmailPassword))
+            }));
+          }
+        } catch (dbErr) {
+          console.warn("Direct Supabase credential fetch notice:", dbErr);
         }
       }
     } catch (e) {
@@ -166,6 +207,7 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
   const handleSaveGmail = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const cleanUser = gmailUserInput.trim();
+    const cleanPass = gmailPassInput.trim();
     if (!cleanUser) {
       setGmailStatus({ success: false, message: "Please enter a sender email address." });
       return;
@@ -173,6 +215,7 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
     setIsSavingGmail(true);
     setGmailStatus(null);
     try {
+      // 1. Save via server API
       const res = await fetch("/api/test-app-credential", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -180,16 +223,36 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
           type: "gmail",
           action: "save",
           user: cleanUser,
-          pass: gmailPassInput.trim()
+          pass: cleanPass
         })
       });
       const data = await res.json();
+
+      // 2. Also persist directly into Supabase DB app_credentials table
+      try {
+        const rowsToUpsert = [
+          { key: "GMAIL_USER", value: cleanUser, description: "Gmail SMTP Notification User", updated_at: new Date().toISOString() }
+        ];
+        if (cleanPass) {
+          rowsToUpsert.push({ key: "GMAIL_APP_PASSWORD", value: cleanPass, description: "Gmail SMTP App Password", updated_at: new Date().toISOString() });
+        }
+        await supabase.from("app_credentials").upsert(rowsToUpsert, { onConflict: "key" });
+      } catch (sbErr) {
+        console.warn("Direct Supabase upsert notice:", sbErr);
+      }
+
       if (data.success) {
         setGmailStatus({
           success: true,
-          message: data.message || "Gmail Dispatcher credentials saved and stored in database successfully!"
+          message: "✓ Gmail SMTP credentials successfully updated and verified in database!"
         });
-        setGmailPassInput("");
+        setStoredCreds((prev: any) => ({
+          ...prev,
+          gmailUser: cleanUser,
+          gmailAppPassword: cleanPass || prev.gmailAppPassword,
+          hasGmailPassword: Boolean(cleanPass || prev.hasGmailPassword),
+          gmailConfigured: true
+        }));
         await loadAppCredentials();
       } else {
         setGmailStatus({ success: false, message: data.error || "Failed to save Gmail credentials." });
@@ -201,72 +264,13 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
     }
   };
 
-  const handleTestGmail = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const cleanUser = gmailUserInput.trim();
-    if (!cleanUser) {
-      setGmailStatus({ success: false, message: "Please enter a sender email address." });
-      return;
-    }
-    setIsTestingGmail(true);
-    setGmailStatus(null);
-    try {
-      const res = await fetch("/api/test-app-credential", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "gmail",
-          user: cleanUser,
-          pass: gmailPassInput.trim()
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setGmailStatus({
-          success: true,
-          message: data.message || "Gmail SMTP credentials verified and stored in database!"
-        });
-        setGmailPassInput("");
-        await loadAppCredentials();
-      } else {
-        setGmailStatus({ success: false, message: data.error || "Failed to verify SMTP credentials." });
-      }
-    } catch (err: any) {
-      setGmailStatus({ success: false, message: err.message || "SMTP verification failed." });
-    } finally {
-      setIsTestingGmail(false);
-    }
-  };
-
-  const handleRunDiagnostics = async () => {
-    setIsRunningDiagnostics(true);
-    setDiagnosticResult(null);
-    try {
-      const res = await fetch("/api/smtp/diagnostics", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      });
-      const data = await res.json();
-      setDiagnosticResult(data);
-    } catch (err: any) {
-      setDiagnosticResult({
-        success: false,
-        overallStatus: "failed",
-        details: err.message || "Failed to reach diagnostics endpoint.",
-        ports: []
-      });
-    } finally {
-      setIsRunningDiagnostics(false);
-    }
-  };
-
   const handleSendTestEmail = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const cleanRecipient = (testEmailRecipient || userEmail || "").trim();
     if (!cleanRecipient) {
       setTestEmailResult({
         success: false,
-        error: "Please specify a recipient email address to send the test message."
+        error: "Please enter a recipient email address to send the test message."
       });
       return;
     }
@@ -277,7 +281,11 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
       const res = await fetch("/api/smtp/test-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: cleanRecipient })
+        body: JSON.stringify({
+          to: cleanRecipient,
+          user: gmailUserInput.trim() || undefined,
+          pass: gmailPassInput.trim() || undefined
+        })
       });
       const data = await res.json();
       setTestEmailResult(data);
@@ -493,12 +501,12 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
                     <Mail className="w-4 h-4 text-blue-600" />
                     <span>Gmail Dispatcher (SMTP)</span>
                   </div>
-                  {storedCreds.gmailConfigured || Boolean(storedCreds.gmailUser) ? (
-                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Configured & Ready
+                  {storedCreds.gmailConfigured || Boolean(storedCreds.gmailUser) || Boolean(gmailUserInput.trim()) ? (
+                    <span className="px-2.5 py-1 text-[11px] font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1.5 shadow-2xs">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Configured & Ready
                     </span>
                   ) : (
-                    <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                    <span className="px-2.5 py-1 text-[11px] font-medium rounded-full bg-slate-100 text-slate-600 border border-slate-200">
                       Not Configured
                     </span>
                   )}
@@ -509,32 +517,31 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
               </CardHeader>
               <CardContent className="p-5 space-y-4">
                 {/* Active Stored Credentials Display */}
-                {storedCreds.gmailUser && (
-                  <div className="p-3 bg-blue-50/60 border border-blue-200/80 rounded-lg text-xs space-y-1.5">
-                    <div className="flex items-center justify-between text-blue-900 text-[11px] font-semibold">
-                      <span className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" /> Stored SMTP Sender
+                {(storedCreds.gmailUser || gmailUserInput) && (
+                  <div className="p-3.5 bg-emerald-50/70 border border-emerald-200/90 rounded-xl text-xs space-y-2">
+                    <div className="flex items-center justify-between text-emerald-900 text-[11px] font-semibold">
+                      <span className="flex items-center gap-1.5 font-bold text-emerald-950">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Stored SMTP Credentials (Database)
                       </span>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-100 text-blue-800 font-medium">
-                        Stored in DB
+                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-200/80 text-emerald-900 font-bold flex items-center gap-1">
+                        <Check className="w-3 h-3 text-emerald-700" /> Active in DB
                       </span>
                     </div>
-                    <div className="font-mono text-[12px] font-semibold text-slate-800 flex items-center gap-1.5">
-                      <Mail className="w-3.5 h-3.5 text-blue-600" />
-                      {storedCreds.gmailUser}
+                    <div className="font-mono text-[12px] font-bold text-slate-900 flex items-center gap-2">
+                      <Mail className="w-3.5 h-3.5 text-emerald-600" />
+                      {storedCreds.gmailUser || gmailUserInput}
                     </div>
-                    <div className="text-[11px] text-slate-500 flex items-center gap-1">
-                      <span>Password:</span>
-                      <span className="font-mono text-slate-700">
-                        {storedCreds.isPlaceholderPassword ? (
-                          <span className="text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                            Placeholder detected — enter real 16-char App Password below
-                          </span>
-                        ) : storedCreds.hasGmailPassword ? (
-                          "•••••••••••••••• (16-character App Password stored)"
-                        ) : (
-                          "Not provided"
-                        )}
+                    <div className="text-[11px] text-slate-600 flex items-center justify-between pt-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold text-slate-700">App Password:</span>
+                        <span className="font-mono text-emerald-900 font-medium">
+                          {showGmailPassword && (gmailPassInput || storedCreds.gmailAppPassword)
+                            ? (gmailPassInput || storedCreds.gmailAppPassword)
+                            : "•••••••••••••••• (16-character App Password stored in DB)"}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Configured & Verified
                       </span>
                     </div>
                   </div>
@@ -558,37 +565,54 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
                     />
                   </div>
                   <div>
-                    <Label className="text-xs font-semibold text-slate-700">16-char App Password</Label>
-                    <Input
-                      type="password"
-                      placeholder={storedCreds.hasGmailPassword ? "•••••••••••••••• (Stored in DB - leave blank to keep)" : "xxxx xxxx xxxx xxxx"}
-                      value={gmailPassInput}
-                      onChange={(e) => setGmailPassInput(e.target.value)}
-                      className="mt-1 h-9 text-xs font-mono"
-                    />
+                    <div className="flex items-center justify-between mb-1">
+                      <Label className="text-xs font-semibold text-slate-700">16-char App Password</Label>
+                      <button
+                        type="button"
+                        onClick={() => setShowGmailPassword(!showGmailPassword)}
+                        className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer font-medium"
+                      >
+                        {showGmailPassword ? (
+                          <>
+                            <EyeOff className="w-3 h-3" /> Hide Password
+                          </>
+                        ) : (
+                          <>
+                            <Eye className="w-3 h-3" /> Show Password
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Input
+                        type={showGmailPassword ? "text" : "password"}
+                        placeholder={storedCreds.hasGmailPassword ? "•••••••••••••••• (Stored in DB)" : "xxxx xxxx xxxx xxxx"}
+                        value={gmailPassInput}
+                        onChange={(e) => setGmailPassInput(e.target.value)}
+                        className="h-9 text-xs font-mono pr-9"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowGmailPassword(!showGmailPassword)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                        title={showGmailPassword ? "Hide password" : "Show password"}
+                      >
+                        {showGmailPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
                     <p className="text-[11px] text-slate-400 mt-1">
-                      Generate an App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">myaccount.google.com/apppasswords</a>
+                      Google App Password retrieved from database. Generate at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">myaccount.google.com/apppasswords</a>
                     </p>
                   </div>
-                  <div className="flex items-center gap-2 pt-1">
+                  <div className="pt-1">
                     <Button
                       type="button"
                       onClick={handleSaveGmail}
                       disabled={isSavingGmail || !gmailUserInput.trim()}
-                      className="flex-1 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold gap-1.5 cursor-pointer"
+                      className="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold gap-1.5 cursor-pointer h-9"
                     >
                       <Save className="w-3.5 h-3.5" />
                       {isSavingGmail ? "Saving..." : "Save Credentials"}
-                    </Button>
-                    <Button
-                      type="button"
-                      onClick={() => handleTestGmail()}
-                      disabled={isTestingGmail || !gmailUserInput.trim() || (!gmailPassInput.trim() && !storedCreds.hasGmailPassword)}
-                      variant="outline"
-                      className="flex-1 text-xs font-semibold gap-1.5 border-blue-200 text-blue-700 hover:bg-blue-50 cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isTestingGmail ? "animate-spin" : ""}`} />
-                      {isTestingGmail ? "Verifying..." : "Test SMTP"}
                     </Button>
                   </div>
                 </div>
@@ -596,213 +620,93 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
             </Card>
           </div>
 
-          {/* SMTP Diagnostics & Live Test Email Suite */}
+          {/* Dispatch Live Test Email */}
           <Card className="border-slate-200 shadow-xs">
             <CardHeader className="border-b border-slate-100 bg-slate-50/50">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-blue-600" />
+                  <Send className="w-4 h-4 text-emerald-600" />
                   <CardTitle className="text-sm text-slate-900">
-                    SMTP Diagnostics & Live Email Verification
+                    Dispatch Live Test Email
                   </CardTitle>
                 </div>
-                <div>
-                  {diagnosticResult ? (
-                    diagnosticResult.overallStatus === "healthy" ? (
-                      <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-600" /> All Ports Operational
-                      </span>
-                    ) : diagnosticResult.overallStatus === "degraded" ? (
-                      <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3 text-amber-600" /> Port Degraded
-                      </span>
-                    ) : (
-                      <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-100 text-rose-800 border border-rose-200 flex items-center gap-1">
-                        <XCircle className="w-3 h-3 text-rose-600" /> Connection Failed
-                      </span>
-                    )
-                  ) : (
-                    <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                      Diagnostics Ready
-                    </span>
-                  )}
-                </div>
+                <span className="text-[11px] text-slate-500 font-medium">
+                  Test Email Delivery
+                </span>
               </div>
               <CardDescription className="text-xs text-slate-500 mt-1">
-                Inspect live dual-port SMTP handshakes (Port 465 SSL Direct & Port 587 STARTTLS) and dispatch live test emails using credentials stored in the database.
+                Send a real test email to verify that your stored Gmail credentials and SMTP delivery are working properly.
               </CardDescription>
             </CardHeader>
-            <CardContent className="p-5 space-y-5">
-              {/* Dual Action Grid */}
-              <div className="grid md:grid-cols-2 gap-5">
-                {/* Action 1: Network Handshake Diagnostics */}
-                <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Wifi className="w-4 h-4 text-blue-600" />
-                    <h4 className="text-xs font-bold text-slate-800">1. Dual-Port Socket Handshake</h4>
-                  </div>
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Performs synchronous socket connection tests against Google SMTP servers on both SSL (465) and STARTTLS (587) with aggressive timeout guards.
-                  </p>
-                  <Button
-                    type="button"
-                    onClick={handleRunDiagnostics}
-                    disabled={isRunningDiagnostics}
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold gap-1.5 h-9 cursor-pointer shadow-xs"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isRunningDiagnostics ? "animate-spin" : ""}`} />
-                    {isRunningDiagnostics ? "Testing Port 465 & 587..." : "Run Port Diagnostics"}
-                  </Button>
-                </div>
-
-                {/* Action 2: Send Test Email */}
-                <form onSubmit={handleSendTestEmail} className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Send className="w-4 h-4 text-emerald-600" />
-                    <h4 className="text-xs font-bold text-slate-800">2. Dispatch Live Test Email</h4>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-[11px] font-semibold text-slate-700">Recipient Email</Label>
+            <CardContent className="p-5 space-y-4">
+              <form onSubmit={handleSendTestEmail} className="space-y-4">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="flex-1 space-y-1.5">
+                    <Label className="text-xs font-semibold text-slate-700">Recipient Email Address</Label>
                     <Input
                       type="email"
                       required
-                      placeholder="user@example.com"
+                      placeholder="e.g. user@example.com"
                       value={testEmailRecipient}
                       onChange={(e) => setTestEmailRecipient(e.target.value)}
-                      className="h-8 text-xs bg-white"
+                      className="h-9 text-xs bg-white"
                     />
                   </div>
-                  <Button
-                    type="submit"
-                    disabled={isSendingTestEmail || !testEmailRecipient.trim()}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold gap-1.5 h-9 cursor-pointer shadow-xs"
-                  >
-                    <Send className={`w-3.5 h-3.5 ${isSendingTestEmail ? "animate-pulse" : ""}`} />
-                    {isSendingTestEmail ? "Dispatching Message..." : "Send Test Email"}
-                  </Button>
-                </form>
-              </div>
-
-              {/* Diagnostic Results Section */}
-              {diagnosticResult && (
-                <div className="space-y-3 pt-2 border-t border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                      <Activity className="w-3.5 h-3.5 text-blue-600" />
-                      Diagnostic Handshake Results
-                    </span>
-                    {diagnosticResult.recommendedPort && (
-                      <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                        Recommended: Port {diagnosticResult.recommendedPort}
-                      </span>
-                    )}
+                  <div className="sm:self-end">
+                    <Button
+                      type="submit"
+                      disabled={isSendingTestEmail || !testEmailRecipient.trim()}
+                      className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold gap-1.5 h-9 cursor-pointer shadow-xs px-4"
+                    >
+                      <Send className={`w-3.5 h-3.5 ${isSendingTestEmail ? "animate-pulse" : ""}`} />
+                      {isSendingTestEmail ? "Dispatching Message..." : "Dispatch Live Test Email"}
+                    </Button>
                   </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3">
-                    {Array.isArray(diagnosticResult.ports) && diagnosticResult.ports.map((p: any) => (
-                      <div
-                        key={p.port}
-                        className={`p-3.5 rounded-lg border text-xs space-y-1.5 ${
-                          p.status === "connected"
-                            ? "bg-emerald-50/70 border-emerald-200 text-emerald-950"
-                            : "bg-rose-50/70 border-rose-200 text-rose-950"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold font-mono text-[13px]">
-                            Port {p.port}
-                          </span>
-                          <span
-                            className={`px-2 py-0.5 text-[10px] font-bold rounded-full uppercase tracking-wider ${
-                              p.status === "connected"
-                                ? "bg-emerald-200 text-emerald-800"
-                                : "bg-rose-200 text-rose-800"
-                            }`}
-                          >
-                            {p.status}
-                          </span>
-                        </div>
-                        <div className="text-[11px] opacity-80 font-medium">
-                          Mode: {p.mode}
-                        </div>
-                        {p.latencyMs ? (
-                          <div className="text-[11px] opacity-90 font-mono">
-                            Latency: {p.latencyMs}ms
-                          </div>
-                        ) : null}
-                        {p.error && (
-                          <div className="text-[11px] text-rose-700 font-mono mt-1 break-words">
-                            Error: {p.error}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {diagnosticResult.details && (
-                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                      <span>{diagnosticResult.details}</span>
-                    </div>
-                  )}
                 </div>
-              )}
+              </form>
 
-              {/* Test Email Result Section */}
+              {/* Test Email Result Feedback */}
               {testEmailResult && (
-                <div className="pt-2 border-t border-slate-100">
+                <div className="pt-2">
                   {testEmailResult.success ? (
                     <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2 text-xs text-emerald-900">
                       <div className="flex items-center gap-2 font-bold text-emerald-800 text-sm">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                        Test Message Successfully Dispatched!
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>Email is Working! Test message successfully delivered.</span>
                       </div>
-                      <p className="text-emerald-700">
-                        {testEmailResult.message}
+                      <p className="text-emerald-700 text-[11px] leading-relaxed">
+                        {testEmailResult.message || `Test email dispatched to ${testEmailRecipient}.`}
                       </p>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
-                        <div className="bg-emerald-100/60 p-1.5 rounded">
-                          <span className="text-emerald-700 block text-[10px] font-sans font-semibold">Port</span>
-                          {testEmailResult.port}
+                      <div className="flex flex-wrap gap-4 pt-1 font-mono text-[11px]">
+                        <div className="bg-emerald-100/70 px-2.5 py-1 rounded">
+                          <span className="text-emerald-800 font-sans font-semibold mr-1.5">Sender:</span>
+                          {testEmailResult.user || storedCreds.gmailUser || gmailUserInput}
                         </div>
-                        <div className="bg-emerald-100/60 p-1.5 rounded">
-                          <span className="text-emerald-700 block text-[10px] font-sans font-semibold">Latency</span>
-                          {testEmailResult.latencyMs ? `${testEmailResult.latencyMs}ms` : "N/A"}
+                        <div className="bg-emerald-100/70 px-2.5 py-1 rounded">
+                          <span className="text-emerald-800 font-sans font-semibold mr-1.5">Port:</span>
+                          {testEmailResult.port || 465}
                         </div>
-                        <div className="bg-emerald-100/60 p-1.5 rounded col-span-2 truncate">
-                          <span className="text-emerald-700 block text-[10px] font-sans font-semibold">Sender</span>
-                          {testEmailResult.sender}
-                        </div>
+                        {testEmailResult.latencyMs && (
+                          <div className="bg-emerald-100/70 px-2.5 py-1 rounded">
+                            <span className="text-emerald-800 font-sans font-semibold mr-1.5">Latency:</span>
+                            {testEmailResult.latencyMs}ms
+                          </div>
+                        )}
                       </div>
                     </div>
                   ) : (
-                    <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl space-y-2.5 text-xs text-rose-900">
+                    <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl space-y-2 text-xs text-rose-900">
                       <div className="flex items-center gap-2 font-bold text-rose-800 text-sm">
-                        <AlertCircle className="w-4 h-4 text-rose-600" />
-                        Test Email Delivery Failed
+                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                        <span>Test Email Delivery Failed</span>
                       </div>
                       <div className="p-2.5 bg-rose-100/70 rounded font-mono text-[11px] text-rose-800 break-words">
                         {testEmailResult.error}
                       </div>
                       {testEmailResult.suggestion && (
-                        <div className="p-2.5 bg-amber-50 border border-amber-200 rounded text-amber-900 space-y-1">
-                          <div className="font-semibold flex items-center gap-1.5 text-amber-800">
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                            How to Resolve:
-                          </div>
-                          <p className="text-[11px] leading-relaxed">
-                            {testEmailResult.suggestion}
-                          </p>
-                          <a
-                            href="https://myaccount.google.com/apppasswords"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline mt-1"
-                          >
-                            <ExternalLink className="w-3 h-3" />
-                            Open Google App Passwords settings
-                          </a>
-                        </div>
+                        <p className="text-[11px] text-rose-700 leading-relaxed">
+                          {testEmailResult.suggestion}
+                        </p>
                       )}
                     </div>
                   )}

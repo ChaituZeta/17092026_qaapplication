@@ -1184,7 +1184,9 @@ export function Campaigns({ userEmail = "", userRole = "user" }: { userEmail?: s
                         >
                         <td className="px-3 py-2 font-semibold text-slate-900 truncate">
                           <div className="flex items-center gap-1.5 truncate">
-                            <GripVertical className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 shrink-0 cursor-grab active:cursor-grabbing" title="Drag to move to a folder" />
+                            <span title="Drag to move to a folder" className="flex items-center">
+                              <GripVertical className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 shrink-0 cursor-grab active:cursor-grabbing" />
+                            </span>
                             <button
                               onClick={() => navigate(`/campaigns/new?id=${campaign.id}`)}
                               className="text-left font-bold text-slate-900 hover:text-[#2b61d6] hover:underline truncate"
@@ -1410,7 +1412,9 @@ export function Campaigns({ userEmail = "", userRole = "user" }: { userEmail?: s
                     <div>
                       <div className="p-4 border-b border-slate-100 flex justify-between items-start bg-slate-50/50">
                         <div className="flex items-start gap-2">
-                          <GripVertical className="w-4 h-4 text-slate-300 group-hover:text-slate-500 shrink-0 mt-0.5 cursor-grab active:cursor-grabbing" title="Drag to move to a folder" />
+                          <span title="Drag to move to a folder" className="flex items-center">
+                            <GripVertical className="w-4 h-4 text-slate-300 group-hover:text-slate-500 shrink-0 mt-0.5 cursor-grab active:cursor-grabbing" />
+                          </span>
                           <div>
                             <button
                               onClick={() => navigate(`/campaigns/new?id=${campaign.id}`)}

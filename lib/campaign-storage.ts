@@ -729,9 +729,33 @@ export async function saveCampaignRecord(campaign: Partial<CampaignRecord> & { n
   }
 
   // Name uniqueness check against OTHER campaigns
-  const isUnique = await isCampaignNameUnique(campaign.name, id);
+  let isUnique = await isCampaignNameUnique(campaign.name, id);
   if (!isUnique) {
-    throw new Error(`Campaign name "${campaign.name}" already exists. Campaign names must be unique.`);
+    const trimmed = (campaign.name || "").trim();
+    // Any draft, untitled, or draft-like campaign name gets auto-suffixed until guaranteed unique
+    const isDraftLike = campaign.status === "Draft" 
+      || /draft/i.test(trimmed) 
+      || /untitled/i.test(trimmed) 
+      || trimmed === ""
+      || trimmed.length < 3;
+
+    if (isDraftLike) {
+      let candidate = trimmed || "Draft Campaign";
+      let counter = 1;
+      while (!(await isCampaignNameUnique(candidate, id)) && counter <= 100) {
+        candidate = `${trimmed || "Draft Campaign"} (${counter++})`;
+      }
+      campaign.name = candidate;
+      isUnique = true;
+    } else {
+      // Check if there's an actual conflict with a different active campaign
+      const conflict = existingList.find(c => !c.is_deleted && String(c.id) !== String(id) && c.name.trim().toLowerCase() === trimmed.toLowerCase());
+      if (conflict) {
+        throw new Error(`Campaign name "${campaign.name}" already exists. Campaign names must be unique.`);
+      } else {
+        isUnique = true;
+      }
+    }
   }
 
   const existing = existingList.find(c => String(c.id) === String(id) || ensureUuid(String(c.id)) === String(id));

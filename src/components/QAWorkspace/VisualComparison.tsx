@@ -860,7 +860,18 @@ export function VisualComparison({
 
   useEffect(() => {
     if (visualChecks) {
-      setChecks(visualChecks);
+      setChecks(prev => {
+        if (
+          prev.desktopLight === visualChecks.desktopLight &&
+          prev.mobileLight === visualChecks.mobileLight &&
+          prev.desktopDark === visualChecks.desktopDark &&
+          prev.mobileDark === visualChecks.mobileDark &&
+          prev.litmus === visualChecks.litmus
+        ) {
+          return prev;
+        }
+        return visualChecks;
+      });
     }
   }, [visualChecks]);
 

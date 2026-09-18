@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import { getCurrentAppState, saveAppState } from "../utils/state.ts";
-import { getSupabaseServiceKey, getSupabaseUrl, getSupabaseAnonKey, setDatabaseCredentials, clearDatabaseCredentials, checkEnvDbCredentials } from "../utils/db.ts";
+import { getSupabaseServiceKey, getSupabaseUrl, getSupabaseAnonKey, setDatabaseCredentials, clearDatabaseCredentials, checkEnvDbCredentials, saveToEnvFile } from "../utils/db.ts";
 import { getAppCredentialFromDB, setAppCredentialInDB } from "../utils/credentials.ts";
 import { getPersistentDatabaseStatus, persistDatabaseConnectionStatus, clearPersistentDatabaseStatus } from "../utils/dbStatus.ts";
 import nodemailer from "nodemailer";
@@ -18,10 +18,10 @@ router.get("/api/env-config", async (req, res) => {
   const serviceKey = getSupabaseServiceKey();
   
   // Non-DB credentials retrieved directly from Supabase database first
-  const geminiKey = await getAppCredentialFromDB("GEMINI_API_KEY");
-  const gmailUser = await getAppCredentialFromDB("GMAIL_USER");
-  const gmailPass = await getAppCredentialFromDB("GMAIL_APP_PASSWORD");
-  const sessionSecret = await getAppCredentialFromDB("SESSION_SECRET");
+  const geminiKey = await getAppCredentialFromDB("GEMINI_API_KEY") || process.env.GEMINI_API_KEY || "";
+  const gmailUser = await getAppCredentialFromDB("GMAIL_USER") || process.env.GMAIL_USER || "";
+  const gmailPass = await getAppCredentialFromDB("GMAIL_APP_PASSWORD") || process.env.GMAIL_APP_PASSWORD || "";
+  const sessionSecret = await getAppCredentialFromDB("SESSION_SECRET") || process.env.SESSION_SECRET || "";
 
   res.json({
     supabaseUrl: url || "",
@@ -29,7 +29,9 @@ router.get("/api/env-config", async (req, res) => {
     hasServiceRoleKey: Boolean(serviceKey && serviceKey !== anonKey),
     hasGeminiKey: Boolean(geminiKey),
     gmailUser: gmailUser || "",
+    gmailAppPassword: gmailPass || "",
     hasGmailAppPassword: Boolean(gmailPass),
+    gmailConfigured: Boolean(gmailUser && gmailPass),
     hasSessionSecret: Boolean(sessionSecret),
     isConfigured: Boolean(url && anonKey && url.startsWith("https://") && anonKey.length > 10)
   });
@@ -388,7 +390,9 @@ router.get("/api/app-credentials", async (req, res) => {
 
     const isGmailConfigured = Boolean(
       gmailUserVal && 
-      gmailUserVal.trim().length > 0
+      gmailUserVal.trim().length > 0 &&
+      gmailPassVal &&
+      !isPlaceholderPass
     );
 
     return res.json({
@@ -397,6 +401,7 @@ router.get("/api/app-credentials", async (req, res) => {
         hasGeminiKey: Boolean(geminiVal),
         geminiConfigured: Boolean(geminiVal),
         gmailUser: gmailUserVal || "",
+        gmailAppPassword: gmailPassVal || "",
         hasGmailPassword: Boolean(gmailPassVal && !isPlaceholderPass),
         isPlaceholderPassword: isPlaceholderPass,
         gmailConfigured: isGmailConfigured,
@@ -417,10 +422,15 @@ router.post("/api/save-app-credential", async (req, res) => {
   // Support direct Gmail credentials save
   if (type === "gmail" || key === "GMAIL_CREDENTIALS") {
     const gmailUser = (user || "").trim();
-    const gmailPass = (pass || "").trim();
+    let gmailPass = (pass || "").trim();
 
     if (!gmailUser) {
       return res.status(400).json({ success: false, error: "Sender email is required." });
+    }
+
+    if (!gmailPass) {
+      gmailPass = (await getAppCredentialFromDB("GMAIL_APP_PASSWORD")) || process.env.GMAIL_APP_PASSWORD || "";
+      gmailPass = gmailPass.trim().replace(/\s+/g, "").replace(/["']/g, "");
     }
 
     try {
@@ -428,10 +438,19 @@ router.post("/api/save-app-credential", async (req, res) => {
       if (gmailPass) {
         await setAppCredentialInDB("GMAIL_APP_PASSWORD", gmailPass, "Gmail SMTP App Password");
       }
+      process.env.GMAIL_USER = gmailUser;
+      if (gmailPass) {
+        process.env.GMAIL_APP_PASSWORD = gmailPass;
+      }
+      saveToEnvFile({
+        GMAIL_USER: gmailUser,
+        ...(gmailPass ? { GMAIL_APP_PASSWORD: gmailPass } : {})
+      });
       return res.json({
         success: true,
         message: "Gmail Dispatcher credentials saved and stored in database successfully!",
-        gmailUser
+        gmailUser,
+        gmailAppPassword: gmailPass
       });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
@@ -515,10 +534,19 @@ router.post("/api/test-app-credential", async (req, res) => {
         if (gmailPass) {
           await setAppCredentialInDB("GMAIL_APP_PASSWORD", gmailPass, "Gmail SMTP App Password");
         }
+        process.env.GMAIL_USER = gmailUser;
+        if (gmailPass) {
+          process.env.GMAIL_APP_PASSWORD = gmailPass;
+        }
+        saveToEnvFile({
+          GMAIL_USER: gmailUser,
+          ...(gmailPass ? { GMAIL_APP_PASSWORD: gmailPass } : {})
+        });
         return res.json({
           success: true,
           message: "Gmail Dispatcher credentials saved and stored successfully!",
-          gmailUser
+          gmailUser,
+          gmailAppPassword: gmailPass
         });
       }
 
@@ -557,11 +585,18 @@ router.post("/api/test-app-credential", async (req, res) => {
         // Save directly into Supabase database & runtime environment
         await setAppCredentialInDB("GMAIL_USER", gmailUser, "Gmail SMTP Notification User");
         await setAppCredentialInDB("GMAIL_APP_PASSWORD", gmailPass, "Gmail SMTP App Password");
+        process.env.GMAIL_USER = gmailUser;
+        process.env.GMAIL_APP_PASSWORD = gmailPass;
+        saveToEnvFile({
+          GMAIL_USER: gmailUser,
+          GMAIL_APP_PASSWORD: gmailPass
+        });
 
         return res.json({
           success: true,
           message: `Gmail SMTP verified successfully! Ready to dispatch QA approvals from ${gmailUser}.`,
-          gmailUser
+          gmailUser,
+          gmailAppPassword: gmailPass
         });
       } catch (smtpErr: any) {
         console.warn("[Server API] SMTP verification test failed:", smtpErr.message);

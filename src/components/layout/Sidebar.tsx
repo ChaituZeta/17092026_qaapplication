@@ -59,10 +59,14 @@ export function Sidebar({ role, userEmail }: { role: string; userEmail?: string 
   }, []);
 
   useEffect(() => {
-    setProfile(prev => ({
-      ...prev,
-      name: prev.name && prev.name !== "QA User" ? prev.name : defaultDisplayName
-    }));
+    setProfile(prev => {
+      const targetName = prev.name && prev.name !== "QA User" ? prev.name : defaultDisplayName;
+      if (prev.name === targetName) return prev;
+      return {
+        ...prev,
+        name: targetName
+      };
+    });
   }, [defaultDisplayName]);
 
   const loadProfileData = async () => {

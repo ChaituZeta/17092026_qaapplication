@@ -22,6 +22,8 @@ import { SetupPage } from "./pages/SetupPage";
 import { PrivacyPolicy } from "./pages/PrivacyPolicy";
 import { SessionManager } from "./components/SessionManager";
 import { rehydratePreRouterUrl, RouteHydrator } from "@/lib/route-persistence";
+import { ErrorBoundary } from "./components/common/ErrorBoundary";
+import { RouteErrorFallback } from "./components/common/RouteErrorFallback";
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -73,85 +75,142 @@ function ProtectedRoute() {
 
 function SetupPageWrapper() {
   const { handleSetupComplete } = useAuth();
-  return <SetupPage onComplete={handleSetupComplete} />;
+  return (
+    <ErrorBoundary level="page" componentName="Setup Initialization">
+      <SetupPage onComplete={handleSetupComplete} />
+    </ErrorBoundary>
+  );
 }
 
 function LoginWrapper() {
   const { checkAuthSession } = useAuth();
-  return <Login onLogin={() => checkAuthSession()} />;
+  return (
+    <ErrorBoundary level="page" componentName="Authentication Portal">
+      <Login onLogin={() => checkAuthSession()} />
+    </ErrorBoundary>
+  );
 }
 
 function DashboardWrapper() {
   const { userEmail, userRole } = useAuth();
-  return <Dashboard userEmail={userEmail} userRole={userRole} />;
+  return (
+    <ErrorBoundary level="page" componentName="Executive Dashboard">
+      <Dashboard userEmail={userEmail} userRole={userRole} />
+    </ErrorBoundary>
+  );
 }
 
 function CampaignSetupWrapper() {
   const { userEmail, userRole } = useAuth();
-  return <CampaignSetup userEmail={userEmail} userRole={userRole} />;
+  return (
+    <ErrorBoundary level="page" componentName="Campaign Setup & QA Workspace">
+      <CampaignSetup userEmail={userEmail} userRole={userRole} />
+    </ErrorBoundary>
+  );
 }
 
 function CampaignsWrapper() {
   const { userEmail, userRole } = useAuth();
-  return <Campaigns userEmail={userEmail} userRole={userRole} />;
+  return (
+    <ErrorBoundary level="page" componentName="Campaigns Library">
+      <Campaigns userEmail={userEmail} userRole={userRole} />
+    </ErrorBoundary>
+  );
 }
 
 function RecycleBinWrapper() {
   const { userEmail, userRole } = useAuth();
-  return <RecycleBin userEmail={userEmail} userRole={userRole} />;
+  return (
+    <ErrorBoundary level="page" componentName="Recycle Bin">
+      <RecycleBin userEmail={userEmail} userRole={userRole} />
+    </ErrorBoundary>
+  );
+}
+
+function ReportsWrapper() {
+  return (
+    <ErrorBoundary level="page" componentName="Executive Reports & Analytics">
+      <Reports />
+    </ErrorBoundary>
+  );
 }
 
 function UsersListWrapper() {
   const { userRole, userEmail } = useAuth();
-  return <UsersList role={userRole} userEmail={userEmail} />;
+  return (
+    <ErrorBoundary level="page" componentName="User & Access Management">
+      <UsersList role={userRole} userEmail={userEmail} />
+    </ErrorBoundary>
+  );
 }
 
 function SettingsWrapper() {
   const { userRole, userEmail } = useAuth();
-  return <Settings role={userRole} userEmail={userEmail} />;
+  return (
+    <ErrorBoundary level="page" componentName="System Settings">
+      <Settings role={userRole} userEmail={userEmail} />
+    </ErrorBoundary>
+  );
 }
 
 function ProfileWrapper() {
   const { userRole, userEmail } = useAuth();
-  return <Profile role={userRole} userEmail={userEmail} />;
+  return (
+    <ErrorBoundary level="page" componentName="User Profile">
+      <Profile role={userRole} userEmail={userEmail} />
+    </ErrorBoundary>
+  );
 }
 
 function AgentsWrapper() {
   const { userRole } = useAuth();
-  return <Agents role={userRole} />;
+  return (
+    <ErrorBoundary level="page" componentName="AI Agent Studio">
+      <Agents role={userRole} />
+    </ErrorBoundary>
+  );
 }
 
 function AgentChatWrapper() {
   const { userRole } = useAuth();
-  return <AgentChat role={userRole} />;
+  return (
+    <ErrorBoundary level="page" componentName="Agent Chat Console">
+      <AgentChat role={userRole} />
+    </ErrorBoundary>
+  );
 }
 
 function ChecklistsWrapper() {
   const { userRole } = useAuth();
-  return <Checklists role={userRole} />;
+  return (
+    <ErrorBoundary level="page" componentName="QA Checklists & Standards">
+      <Checklists role={userRole} />
+    </ErrorBoundary>
+  );
 }
 
 // Synchronously re-hydrate the browser URL before router instantiation
 rehydratePreRouterUrl();
 
 const router = createBrowserRouter([
-  { path: "/setup", element: <SetupPageWrapper /> },
-  { path: "/signup", element: <Signup /> },
-  { path: "/invite", element: <Signup /> },
-  { path: "/login", element: <LoginWrapper /> },
-  { path: "/forgot-password", element: <ForgotPassword /> },
-  { path: "/privacy", element: <PrivacyPolicy /> },
-  { path: "/privacy-policy", element: <PrivacyPolicy /> },
+  { path: "/setup", element: <SetupPageWrapper />, errorElement: <RouteErrorFallback /> },
+  { path: "/signup", element: <Signup />, errorElement: <RouteErrorFallback /> },
+  { path: "/invite", element: <Signup />, errorElement: <RouteErrorFallback /> },
+  { path: "/login", element: <LoginWrapper />, errorElement: <RouteErrorFallback /> },
+  { path: "/forgot-password", element: <ForgotPassword />, errorElement: <RouteErrorFallback /> },
+  { path: "/privacy", element: <PrivacyPolicy />, errorElement: <RouteErrorFallback /> },
+  { path: "/privacy-policy", element: <PrivacyPolicy />, errorElement: <RouteErrorFallback /> },
   {
     path: "/",
     element: <ProtectedRoute />,
+    errorElement: <RouteErrorFallback />,
     children: [
       { index: true, element: <DashboardWrapper /> },
       { path: "campaigns/new", element: <CampaignSetupWrapper /> },
       { path: "campaigns", element: <CampaignsWrapper /> },
       { path: "campaign", element: <Navigate to="/campaigns" replace /> },
       { path: "recycle-bin", element: <RecycleBinWrapper /> },
-      { path: "reports", element: <Reports /> },
+      { path: "reports", element: <ReportsWrapper /> },
       { path: "users", element: <UsersListWrapper /> },
       { path: "settings", element: <SettingsWrapper /> },
       { path: "profile", element: <ProfileWrapper /> },
@@ -367,23 +426,29 @@ export default function App() {
 
   // Initial Setup: If required database credentials are not available in .env, show Setup Page as the first screen
   if (!dbConnected) {
-    return <SetupPage onComplete={handleSetupComplete} />;
+    return (
+      <ErrorBoundary level="root" componentName="Setup Initialization">
+        <SetupPage onComplete={handleSetupComplete} />
+      </ErrorBoundary>
+    );
   }
 
   // .env exists with required credentials: Skip Setup Page and load application normally
   return (
-    <AuthContext.Provider
-      value={{
-        isAuthenticated,
-        isLoading,
-        userRole,
-        userEmail,
-        checkAuthSession,
-        handleSetupComplete,
-      }}
-    >
-      <RouterProvider router={router} />
-    </AuthContext.Provider>
+    <ErrorBoundary level="root" componentName="HP QA Platform">
+      <AuthContext.Provider
+        value={{
+          isAuthenticated,
+          isLoading,
+          userRole,
+          userEmail,
+          checkAuthSession,
+          handleSetupComplete,
+        }}
+      >
+        <RouterProvider router={router} />
+      </AuthContext.Provider>
+    </ErrorBoundary>
   );
 }
 

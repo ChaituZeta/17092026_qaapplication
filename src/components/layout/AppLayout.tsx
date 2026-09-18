@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import { Sidebar } from "./Sidebar";
 import { SessionManager } from "../SessionManager";
 import { NetworkStatusBar } from "../NetworkStatusBar";
-import { GlobalHeader } from "./GlobalHeader";
+import { ErrorBoundary } from "../common/ErrorBoundary";
 import { useRoutePersister, saveRouteScrollPosition, getRouteScrollPosition } from "@/lib/route-persistence";
 
 export function AppLayout({ role, userEmail }: { role: string; userEmail?: string }) {
@@ -40,14 +40,43 @@ export function AppLayout({ role, userEmail }: { role: string; userEmail?: strin
     };
   }, [location.pathname, location.search]);
 
+  // Global Security Guard: Restrict URL parameters like email/userEmail pointing to other profiles
+  // If present on any non-profile route, immediately strip them to prevent unauthorized profile/session targeting.
+  useEffect(() => {
+    if (!userEmail) return;
+    const search = location.search;
+    if (!search) return;
+
+    try {
+      const params = new URLSearchParams(search);
+      const restrictedKeys = ["email", "userEmail", "user_email", "profileEmail", "targetEmail", "account"];
+      let hasTamperedParam = false;
+
+      for (const key of restrictedKeys) {
+        const val = params.get(key);
+        if (val && val.trim().toLowerCase() !== userEmail.trim().toLowerCase()) {
+          hasTamperedParam = true;
+          params.delete(key);
+        }
+      }
+
+      if (hasTamperedParam && !location.pathname.startsWith("/profile")) {
+        const newSearch = params.toString();
+        const cleanPath = location.pathname + (newSearch ? `?${newSearch}` : "") + location.hash;
+        window.history.replaceState(null, "", cleanPath);
+      }
+    } catch {}
+  }, [location.pathname, location.search, userEmail]);
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-50 text-slate-900 font-sans relative">
       <Sidebar role={role} userEmail={userEmail} />
       <main ref={mainRef} id="main-content-area" className="flex-1 flex flex-col relative overflow-y-auto overflow-x-auto min-w-0 bg-white">
         <NetworkStatusBar role={role} />
-        <GlobalHeader role={role} userEmail={userEmail} />
         <div className="flex-1 flex flex-col min-w-0 z-10">
-          <Outlet />
+          <ErrorBoundary level="page" componentName="Active Page Workspace">
+            <Outlet />
+          </ErrorBoundary>
         </div>
       </main>
     </div>

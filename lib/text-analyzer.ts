@@ -135,7 +135,7 @@ export async function analyzeEnglishText(inputText: string): Promise<TextAnalysi
     };
   }
 
-  const words = text.match(/\b[A-Za-z0-9'-]+\b/g) || [];
+  const words: string[] = text.match(/\b[A-Za-z0-9'-]+\b/g) || [];
   const totalWords = words.length;
 
   let widowWordsCount = 0;

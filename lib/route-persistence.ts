@@ -46,6 +46,23 @@ export function isPersistableRoute(url?: string | null): boolean {
 }
 
 /**
+ * Sanitizes route URLs before persisting them, stripping any spoofed email query params.
+ */
+function sanitizeRouteForPersistence(url: string): string {
+  try {
+    const [base, rest] = url.split("?");
+    if (!rest) return url;
+    const [search, hash] = rest.split("#");
+    const params = new URLSearchParams(search);
+    ["email", "userEmail", "user_email", "targetEmail", "profileEmail", "account"].forEach(k => params.delete(k));
+    const newSearch = params.toString();
+    return base + (newSearch ? `?${newSearch}` : "") + (hash ? `#${hash}` : "");
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Persists the current active URL (including pathname, search params, and hash)
  * to sessionStorage (tab-isolated) and mirrors to localStorage (cross-session).
  */
@@ -53,19 +70,20 @@ export function savePersistedActiveRoute(url: string): void {
   try {
     if (!isPersistableRoute(url)) return;
 
-    inMemoryActiveRoute = url;
+    const safeUrl = sanitizeRouteForPersistence(url);
+    inMemoryActiveRoute = safeUrl;
 
     if (typeof window !== "undefined") {
       // 1. SessionStorage for current browser tab context
       try {
-        sessionStorage.setItem(HP_QA_ACTIVE_ROUTE_KEY, url);
+        sessionStorage.setItem(HP_QA_ACTIVE_ROUTE_KEY, safeUrl);
       } catch (e) {
         console.warn("[RoutePersistence] sessionStorage write failed:", e);
       }
 
       // 2. LocalStorage mirror with timestamp for resiliency
       try {
-        localStorage.setItem(HP_QA_ACTIVE_ROUTE_KEY, url);
+        localStorage.setItem(HP_QA_ACTIVE_ROUTE_KEY, safeUrl);
         localStorage.setItem(HP_QA_ROUTE_TIMESTAMP_KEY, String(Date.now()));
       } catch (e) {
         console.warn("[RoutePersistence] localStorage write failed:", e);

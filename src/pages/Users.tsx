@@ -908,7 +908,7 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                           to="/settings?tab=credentials"
                           className="text-[11px] font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 underline cursor-pointer"
                         >
-                          Open SMTP Diagnostics in Admin Settings <ExternalLink className="w-3 h-3" />
+                          Open Credentials in Admin Settings <ExternalLink className="w-3 h-3" />
                         </Link>
                       </div>
                     </div>

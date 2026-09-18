@@ -129,10 +129,18 @@ export function saveToEnvFile(entries: Record<string, string>): string {
     }
   }
 
-  // Strictly enforce that ONLY database connection credentials belong in .env
+  // Preserve database credentials and environment secrets in .env
   const lines: string[] = [];
-  const dbOnlyKeys = ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"];
-  for (const key of dbOnlyKeys) {
+  const persistentEnvKeys = [
+    "VITE_SUPABASE_URL",
+    "VITE_SUPABASE_ANON_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "GMAIL_USER",
+    "GMAIL_APP_PASSWORD",
+    "GEMINI_API_KEY",
+    "SESSION_SECRET"
+  ];
+  for (const key of persistentEnvKeys) {
     if (merged[key]) {
       lines.push(`${key}=${merged[key]}`);
     }

@@ -1,13 +1,40 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { ChevronDown, Building2, User, Activity, Clock, Users } from "lucide-react";
+import { ChevronDown, Building2, User, Activity, Clock, Users, ShieldAlert, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function Profile({ role, userEmail }: { role: string; userEmail?: string }) {
   const isAdmin = role === "admin";
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Security Check: Detect if someone passed an unauthorized email in the URL
+  const targetParamEmail = (
+    searchParams.get("email") ||
+    searchParams.get("userEmail") ||
+    searchParams.get("user") ||
+    searchParams.get("user_email") ||
+    searchParams.get("account") ||
+    searchParams.get("profileEmail") ||
+    searchParams.get("targetEmail") ||
+    ""
+  ).trim().toLowerCase();
+
+  const authenticatedEmail = (userEmail || "").trim().toLowerCase();
+  const isUnauthorizedAccess = Boolean(targetParamEmail && targetParamEmail !== authenticatedEmail);
+
+  // Silently clean self-referential redundant email query param to keep URL clean
+  useEffect(() => {
+    if (targetParamEmail && targetParamEmail === authenticatedEmail) {
+      setSearchParams(prev => {
+        const next = new URLSearchParams(prev);
+        ["email", "userEmail", "user", "user_email", "account", "profileEmail", "targetEmail"].forEach(k => next.delete(k));
+        return next;
+      }, { replace: true });
+    }
+  }, [targetParamEmail, authenticatedEmail, setSearchParams]);
+
   const initialTab = searchParams.get("tab") || "PROFILE";
   const [activeTab, setActiveTabState] = useState(initialTab);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -15,7 +42,7 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
   const [profile, setProfile] = useState({
     firstName: "",
     lastName: "",
-    email: userEmail || "",
+    email: authenticatedEmail || "",
     phone: "",
     jobTitle: "",
     language: "English",
@@ -43,10 +70,10 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
 
   useEffect(() => {
     async function loadProfile() {
-      if (!userEmail) return;
+      if (!authenticatedEmail || isUnauthorizedAccess) return;
       
       // Load local preferences first
-      const localPrefsRaw = localStorage.getItem(`profile_prefs_${userEmail.trim().toLowerCase()}`);
+      const localPrefsRaw = localStorage.getItem(`profile_prefs_${authenticatedEmail}`);
       if (localPrefsRaw) {
         try {
           const localPrefs = JSON.parse(localPrefsRaw);
@@ -54,7 +81,7 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
         } catch (e) {}
       }
 
-      const { data } = await supabase.from('app_users').select('*').eq('email', userEmail.trim().toLowerCase()).maybeSingle();
+      const { data } = await supabase.from('app_users').select('*').eq('email', authenticatedEmail).maybeSingle();
       if (data) {
         const names = (data.name || "").split(" ");
         const firstName = names[0] || "";
@@ -65,22 +92,21 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
           firstName,
           lastName,
           team: data.team || "Cheetah Digital",
-          // avatar is loaded from local storage earlier if saved, else fallback to data if it existed
         }));
       }
     }
     loadProfile();
-  }, [userEmail]);
+  }, [authenticatedEmail, isUnauthorizedAccess]);
 
   useEffect(() => {
     async function fetchLogs() {
-      if (activeTab === "ACTIVITY" && userEmail) {
+      if (activeTab === "ACTIVITY" && authenticatedEmail && !isUnauthorizedAccess) {
         setIsLoadingLogs(true);
         try {
           const { data } = await supabase
             .from('activity_logs')
             .select('*')
-            .eq('user_email', userEmail.trim().toLowerCase())
+            .eq('user_email', authenticatedEmail)
             .order('created_at', { ascending: false })
             .limit(50);
           
@@ -93,9 +119,10 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
       }
     }
     fetchLogs();
-  }, [activeTab, userEmail]);
+  }, [activeTab, authenticatedEmail, isUnauthorizedAccess]);
 
   const handleSave = async () => {
+    if (isUnauthorizedAccess) return;
     setIsSaving(true);
     setSaveMsg(null);
     try {
@@ -105,7 +132,7 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
       const { error } = await supabase.from('app_users').update({
         name: fullName,
         updated_at: new Date().toISOString()
-      }).eq('email', userEmail?.trim().toLowerCase());
+      }).eq('email', authenticatedEmail);
 
       if (error) throw error;
       
@@ -120,7 +147,7 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
         avatar: profile.avatar
       };
       
-      localStorage.setItem(`profile_prefs_${userEmail?.trim().toLowerCase()}`, JSON.stringify(prefsToSave));
+      localStorage.setItem(`profile_prefs_${authenticatedEmail}`, JSON.stringify(prefsToSave));
       
       setSaveMsg({ type: 'success', text: 'Profile updated successfully!' });
       window.dispatchEvent(new CustomEvent("profile_updated"));
@@ -133,6 +160,7 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
   };
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isUnauthorizedAccess) return;
     const file = e.target.files?.[0];
     if (!file) return;
     
@@ -145,6 +173,61 @@ export function Profile({ role, userEmail }: { role: string; userEmail?: string 
   };
 
   const TABS = ["PROFILE", "TEAMS", "SECURITY", "APP ACCESS", "ACTIVITY"];
+
+  // Render strict access restriction screen if URL parameters target another user's email
+  if (isUnauthorizedAccess) {
+    return (
+      <div className="flex flex-col min-h-screen bg-slate-50 items-center justify-center p-6 select-none animate-in fade-in duration-200">
+        <div className="w-full max-w-md bg-white rounded-2xl border border-rose-200 shadow-sm p-8 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto mb-4 shadow-2xs">
+            <ShieldAlert className="w-7 h-7" />
+          </div>
+          
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-100/80 text-rose-700 text-[11px] font-bold tracking-wide uppercase mb-3">
+            <Lock className="w-3 h-3" />
+            Strict Access Restriction
+          </div>
+
+          <h2 className="text-lg font-bold text-slate-900 mb-2">
+            Unauthorized Profile Access Blocked
+          </h2>
+          
+          <p className="text-xs text-slate-600 leading-relaxed mb-6">
+            Loading or viewing other users&apos; profiles via URL parameters is strictly forbidden. For security and privacy, profile details are locked to your authenticated account.
+          </p>
+
+          <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 text-left mb-6 text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 font-medium">Attempted Target:</span>
+              <span className="font-mono text-rose-600 font-semibold truncate max-w-[200px]" title={targetParamEmail}>
+                {targetParamEmail}
+              </span>
+            </div>
+            <div className="border-t border-slate-200/60 pt-2 flex items-center justify-between">
+              <span className="text-slate-500 font-medium">Authenticated Session:</span>
+              <span className="font-mono text-slate-800 font-semibold truncate max-w-[200px]" title={authenticatedEmail}>
+                {authenticatedEmail || "Active Session"}
+              </span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSearchParams(prev => {
+                const next = new URLSearchParams(prev);
+                ["email", "userEmail", "user", "user_email", "account", "profileEmail", "targetEmail"].forEach(k => next.delete(k));
+                return next;
+              }, { replace: true });
+            }}
+            className="w-full py-2.5 px-4 bg-[#2b61d6] hover:bg-blue-700 text-white text-xs font-semibold rounded-xl transition-all cursor-pointer shadow-2xs active:scale-[0.99]"
+          >
+            Return to My Profile
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col min-h-screen bg-white">
