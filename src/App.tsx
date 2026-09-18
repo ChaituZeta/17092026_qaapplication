@@ -8,7 +8,7 @@ import { Login } from "./pages/Login";
 import { ForgotPassword } from "./pages/ForgotPassword";
 import { Signup } from "./pages/Signup";
 import { supabase, isSupabaseConfigured, checkSetupStatus } from "@/lib/supabase";
-import { getActiveSession, resolveCurrentSession, setActiveSession } from "@/lib/session";
+import { getActiveSession, resolveCurrentSession, setActiveSession, cleanupExpiredSession } from "@/lib/session";
 import { savePreLoginRedirectUrl } from "@/lib/url-redirect";
 import { Settings } from "./pages/Settings";
 import { Profile } from "./pages/Profile";
@@ -267,8 +267,30 @@ export default function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_OUT") {
+        cleanupExpiredSession("Supabase SIGNED_OUT auth event");
+        setIsAuthenticated(false);
+        setUserEmail("");
+        setUserRole("user");
+        setIsLoading(false);
+        return;
+      }
+
       if (session && session.user) {
+        // Check if token has expired
+        if (session.expires_at && session.expires_at * 1000 <= Date.now()) {
+          const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+          if (refreshErr || !refreshed.session) {
+            cleanupExpiredSession(`Supabase token expired during auth change: ${refreshErr?.message || "refresh failed"}`);
+            setIsAuthenticated(false);
+            setUserEmail("");
+            setUserRole("user");
+            setIsLoading(false);
+            return;
+          }
+        }
+
         const email = (session.user.email || "").trim().toLowerCase();
         let role = session.user.user_metadata?.role;
         let name = session.user.user_metadata?.name;

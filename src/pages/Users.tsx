@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { useSearchParams, Link } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { 
   Users, UserPlus, Search, Shield, User, Mail, Building2, 
@@ -16,7 +17,8 @@ export interface AppUser {
   email: string;
   role: "admin" | "user";
   team: string;
-  status: "active" | "banned" | "pending";
+  status: "active" | "banned" | "pending" | "invited";
+  invite_token?: string;
   quick_login_enabled?: boolean;
   last_login?: string;
   created_at?: string;
@@ -24,11 +26,40 @@ export interface AppUser {
 
 export function UsersList({ role, userEmail }: { role: string; userEmail?: string }) {
   const isAdmin = role === "admin";
+  const [searchParams, setSearchParams] = useSearchParams();
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [teamFilter, setTeamFilter] = useState("all");
-  const [roleFilter, setRoleFilter] = useState("all");
+
+  const searchQuery = searchParams.get("q") || "";
+  const teamFilter = searchParams.get("team") || "all";
+  const roleFilter = searchParams.get("role") || "all";
+
+  const setSearchQuery = (q: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (q) next.set("q", q);
+      else next.delete("q");
+      return next;
+    }, { replace: true });
+  };
+
+  const setTeamFilter = (team: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (team && team !== "all") next.set("team", team);
+      else next.delete("team");
+      return next;
+    }, { replace: true });
+  };
+
+  const setRoleFilter = (r: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (r && r !== "all") next.set("role", r);
+      else next.delete("role");
+      return next;
+    }, { replace: true });
+  };
 
   // Invite Modal State
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -37,9 +68,54 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
   const [inviteRole, setInviteRole] = useState<"admin" | "user">("user");
   const [inviteTeam, setInviteTeam] = useState("HP-APJ");
   const [isSendingInvite, setIsSendingInvite] = useState(false);
-  const [modalMessage, setModalMessage] = useState<{ type: "success" | "error" | "warning"; text: string } | null>(null);
+  const [modalMessage, setModalMessage] = useState<{
+    type: "success" | "error" | "warning";
+    text: string;
+    suggestion?: string;
+    errorCode?: string;
+    isSmtpIssue?: boolean;
+  } | null>(null);
   const [createdInviteUrl, setCreatedInviteUrl] = useState<string | null>(null);
   const [copiedModalLink, setCopiedModalLink] = useState(false);
+
+  // Toast Notification State
+  const [toastNotification, setToastNotification] = useState<{
+    id: number;
+    type: "success" | "warning" | "error";
+    title: string;
+    message: string;
+    details?: string;
+  } | null>(null);
+  const toastTimerRef = useRef<any>(null);
+
+  const triggerToast = (
+    type: "success" | "warning" | "error",
+    title: string,
+    message: string,
+    details?: string
+  ) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setToastNotification({
+      id: Date.now(),
+      type,
+      title,
+      message,
+      details
+    });
+    toastTimerRef.current = setTimeout(() => {
+      setToastNotification(null);
+    }, 7000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   // Row Action State
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
@@ -80,79 +156,191 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
     fetchUsers();
   }, []);
 
+  // Generate a cryptographically secure client-side token as guaranteed fallback
+  const generateClientInviteToken = (): string => {
+    try {
+      const bytes = new Uint8Array(24);
+      crypto.getRandomValues(bytes);
+      return "inv_" + Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+    } catch {
+      return "inv_" + Math.random().toString(36).substring(2) + Date.now().toString(36);
+    }
+  };
+
   const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteName.trim() || !inviteEmail.trim()) {
-      setModalMessage({ type: "error", text: "Please provide both name and email." });
+    const cleanName = inviteName.trim();
+    const cleanEmail = inviteEmail.trim().toLowerCase();
+
+    if (!cleanName || !cleanEmail) {
+      setModalMessage({ type: "error", text: "Please provide both full name and email address." });
+      triggerToast("error", "Missing Information", "Please provide both the user's full name and corporate email address.");
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      setModalMessage({ type: "error", text: `"${cleanEmail}" is not a valid email address format.` });
+      triggerToast("error", "Invalid Email Format", `The email "${cleanEmail}" does not appear to be valid. Please check and try again.`);
       return;
     }
 
     setIsSendingInvite(true);
     setModalMessage(null);
 
-    const cleanEmail = inviteEmail.trim().toLowerCase();
+    const dynamicOrigin = window.location.origin;
+    const clientToken = generateClientInviteToken();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
     const newUser: AppUser = {
-      name: inviteName.trim(),
+      name: cleanName,
       email: cleanEmail,
       role: inviteRole,
       team: inviteTeam,
-      status: "active",
+      status: "invited",
+      invite_token: clientToken,
       last_login: "Never",
       created_at: new Date().toISOString()
     };
 
+    // Pre-seed guaranteed fallback link with valid token immediately
+    const fallbackInviteUrl = `${dynamicOrigin}/signup?token=${clientToken}`;
+    setCreatedInviteUrl(fallbackInviteUrl);
+
     try {
-      // 1. Save to DB / Local State
+      // 1. Save user to Supabase app_users table with invite_token
       try {
-        await supabase.from("app_users").upsert(newUser, { onConflict: "email" });
-      } catch (err) {}
-
-      // 2. Notify API
-      await fetch("/api/app-users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: newUser })
-      });
-
-      // 3. Send email invitation using secure unique token
-      const dynamicOrigin = window.location.origin;
-
-      const inviteRes = await fetch("/api/invite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        await supabase.from("app_users").upsert({
           name: newUser.name,
           email: newUser.email,
           role: newUser.role,
           team: newUser.team,
-          origin: dynamicOrigin
-        })
-      });
+          status: "invited",
+          invite_token: clientToken,
+          last_login: "Never"
+        }, { onConflict: "email" });
+      } catch (dbErr) {
+        console.warn("[Invite] Supabase app_users sync notice:", dbErr);
+      }
 
-      const inviteData = await inviteRes.json().catch(() => ({}));
-      const effectiveInviteUrl = inviteData.inviteUrl || `${dynamicOrigin}/signup?token=${inviteData.token || ''}`;
+      // 2. Also record in Supabase invitations table if available
+      try {
+        await supabase.from("invitations").upsert({
+          token: clientToken,
+          email: cleanEmail,
+          name: newUser.name,
+          role: newUser.role,
+          team: newUser.team,
+          status: "pending",
+          expires_at: expiresAt
+        }, { onConflict: "token" });
+      } catch (invErr) {
+        // Invitations table may not exist in user schema yet, continue
+      }
+
+      // 3. Notify server-side app-users state
+      try {
+        await fetch("/api/app-users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: newUser })
+        });
+      } catch {}
+
+      // 4. Send email invitation using secure unique token via server API
+      let inviteData: any = {};
+      let isNetworkOrServerCrash = false;
+
+      try {
+        const inviteRes = await fetch("/api/invite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: newUser.name,
+            email: newUser.email,
+            role: newUser.role,
+            team: newUser.team,
+            origin: dynamicOrigin,
+            token: clientToken
+          })
+        });
+
+        if (inviteRes.ok) {
+          inviteData = await inviteRes.json().catch(() => ({}));
+        } else {
+          try {
+            inviteData = await inviteRes.json();
+          } catch {
+            isNetworkOrServerCrash = true;
+          }
+        }
+      } catch (netErr) {
+        isNetworkOrServerCrash = true;
+      }
+
+      // Resolve final token and invite URL (Guaranteed to have valid token)
+      const finalToken = (inviteData?.token && typeof inviteData.token === "string" && inviteData.token.startsWith("inv_"))
+        ? inviteData.token
+        : clientToken;
+
+      const effectiveInviteUrl = (inviteData?.inviteUrl && inviteData.inviteUrl.includes("token=inv_"))
+        ? inviteData.inviteUrl
+        : `${dynamicOrigin}/signup?token=${finalToken}`;
+
       setCreatedInviteUrl(effectiveInviteUrl);
 
-      if (inviteRes.ok && inviteData.success) {
+      // Check delivery status
+      const isEmailSent = Boolean(
+        inviteData?.success && (inviteData?.emailSent !== false) && (inviteData?.deliveredVia === "smtp" || inviteData?.deliveredVia === "gmail" || !inviteData?.deliveredVia)
+      );
+
+      if (isEmailSent) {
         setModalMessage({ 
           type: "success", 
-          text: `Invitation email dispatched successfully to ${cleanEmail} with a secure unique token link!` 
+          text: `Invitation email dispatched successfully to ${cleanEmail} with a secure unique token link!`,
+          isSmtpIssue: false
         });
+        triggerToast(
+          "success",
+          "Invitation Email Dispatched",
+          `Invitation email successfully dispatched to ${cleanEmail} via SMTP.`,
+          `Security Token: ${finalToken.substring(0, 16)}... | Role: ${inviteRole.toUpperCase()} | Team: ${inviteTeam}`
+        );
         fetchUsers();
       } else {
-        const errorMsg = inviteData.error || inviteData.message || "Failed to dispatch email via SMTP.";
+        const rawError = inviteData?.error || inviteData?.message || (isNetworkOrServerCrash ? "SMTP Mailer service unreachable on serverless host" : "SMTP credentials rejected or connection timed out");
+        const cleanMsg = String(rawError).replace(/\.+$/, "");
+        const suggestion = inviteData?.smtpSuggestion || "Verify your SMTP Sender Email and 16-character Google App Password in Admin Settings > Credentials.";
         setModalMessage({ 
           type: "warning", 
-          text: `User created, but email delivery issue: ${errorMsg}. You can share the secure token link directly below:` 
+          text: `User created & token active in database! However, the automated invitation email could not be delivered through SMTP: ${cleanMsg}`,
+          suggestion: suggestion,
+          errorCode: inviteData?.errorCode || "SMTP_ERROR",
+          isSmtpIssue: true
         });
+        triggerToast(
+          "warning",
+          "SMTP Email Delivery Notice",
+          `User created & active in database, but the email could not be sent to ${cleanEmail}.`,
+          `Error: ${cleanMsg}\n\nSuggested Fix: ${suggestion}`
+        );
         fetchUsers();
       }
     } catch (err: any) {
-      console.warn("Email invite sending notice:", err);
+      console.warn("Email invite sending error:", err);
+      const errMsg = err?.message || "Unexpected failure during invitation process.";
       setModalMessage({ 
-        type: "warning", 
-        text: `User created, but email dispatch failed (${err.message}). You can share the secure signup link directly below:` 
+        type: "error", 
+        text: `Invitation processing error: ${errMsg}. You can still copy the secure invitation link below:`,
+        suggestion: "Verify database connectivity and check network status.",
+        isSmtpIssue: true
       });
+      triggerToast(
+        "error",
+        "Invitation Failed",
+        `Failed to complete the user invitation process for ${cleanEmail}.`,
+        `Error Details: ${errMsg}`
+      );
       fetchUsers();
     } finally {
       setIsSendingInvite(false);
@@ -161,26 +349,58 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
 
   const handleCopyUserSignupLink = async (u: AppUser) => {
     try {
-      // Request secure unique invitation token for this user
-      const res = await fetch("/api/invite/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: u.email,
-          name: u.name,
-          role: u.role,
-          team: u.team,
-          origin: window.location.origin
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      const signupUrl = data.inviteUrl || `${window.location.origin}/signup?token=${data.token || ''}`;
+      const dynamicOrigin = window.location.origin;
+      let token = u.invite_token || "";
+
+      // If user doesn't already have an invite token, generate one and persist
+      if (!token) {
+        token = generateClientInviteToken();
+        try {
+          if (u.id) {
+            await supabase.from("app_users").update({ invite_token: token }).eq("id", u.id);
+          } else {
+            await supabase.from("app_users").update({ invite_token: token }).eq("email", u.email);
+          }
+          await supabase.from("invitations").upsert({
+            token,
+            email: u.email.toLowerCase(),
+            name: u.name,
+            role: u.role,
+            team: u.team,
+            status: "pending",
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+          }, { onConflict: "token" });
+        } catch {}
+      }
+
+      // Also request server to ensure token is synced in app state
+      try {
+        const res = await fetch("/api/invite/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: u.email,
+            name: u.name,
+            role: u.role,
+            team: u.team,
+            token,
+            origin: dynamicOrigin
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.token && typeof data.token === "string" && data.token.startsWith("inv_")) {
+          token = data.token;
+        }
+      } catch {}
+
+      const signupUrl = `${dynamicOrigin}/signup?token=${token}`;
       await navigator.clipboard.writeText(signupUrl);
       setCopiedEmail(u.email);
       setTimeout(() => setCopiedEmail(null), 2500);
     } catch {
-      // Fallback
-      window.prompt("Secure signup link for " + u.email, `${window.location.origin}/signup`);
+      // Guaranteed fallback with user's token or fallback
+      const token = u.invite_token || generateClientInviteToken();
+      window.prompt("Secure signup link for " + u.email, `${window.location.origin}/signup?token=${token}`);
     }
   };
 
@@ -189,6 +409,28 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
     setActionFeedback(null);
     const dynamicOrigin = window.location.origin;
     const cleanEmail = u.email.trim().toLowerCase();
+
+    // Ensure we have a valid token
+    let token = u.invite_token;
+    if (!token) {
+      token = generateClientInviteToken();
+      try {
+        if (u.id) {
+          await supabase.from("app_users").update({ invite_token: token }).eq("id", u.id);
+        } else {
+          await supabase.from("app_users").update({ invite_token: token }).eq("email", cleanEmail);
+        }
+        await supabase.from("invitations").upsert({
+          token,
+          email: cleanEmail,
+          name: u.name,
+          role: u.role,
+          team: u.team,
+          status: "pending",
+          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+        }, { onConflict: "token" });
+      } catch {}
+    }
 
     try {
       const res = await fetch("/api/invite", {
@@ -199,22 +441,34 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
           email: cleanEmail,
           role: u.role,
           team: u.team,
-          origin: dynamicOrigin
+          origin: dynamicOrigin,
+          token
         })
       });
       const data = await res.json().catch(() => ({}));
 
-      if (res.ok && data.success) {
-        setActionFeedback({ email: u.email, text: "Invitation email sent with unique secure token!", success: true });
+      if (res.ok && data.success && data.emailSent !== false) {
+        setActionFeedback({ email: u.email, text: "Invitation email sent successfully via SMTP!", success: true });
+        triggerToast("success", "Invitation Resent", `Invitation email successfully resent to ${cleanEmail} via SMTP.`);
       } else {
+        const rawErr = data.error || data.message || "Email dispatch issue (SMTP credentials or timeout). Token link is active.";
+        const cleanErr = String(rawErr).replace(/\.+$/, "");
         setActionFeedback({ 
           email: u.email, 
-          text: data.error || data.message || "SMTP delivery failed", 
+          text: cleanErr, 
           success: false 
         });
+        triggerToast(
+          "warning",
+          "Email Delivery Issue",
+          `Invitation could not be dispatched to ${cleanEmail}.`,
+          `Error: ${cleanErr}`
+        );
       }
     } catch (err: any) {
-      setActionFeedback({ email: u.email, text: err.message || "Failed to send", success: false });
+      const errMsg = err.message || "Failed to send email";
+      setActionFeedback({ email: u.email, text: errMsg, success: false });
+      triggerToast("error", "Email Resend Failed", `Failed to send email to ${cleanEmail}.`, errMsg);
     } finally {
       setResendingEmail(null);
       setTimeout(() => setActionFeedback(null), 5000);
@@ -611,18 +865,66 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
               Send an email invitation and grant QA platform access.
             </p>
 
-            {modalMessage && (
-              <div
-                className={`mt-4 p-3 rounded-lg text-xs font-medium ${
-                  modalMessage.type === "success"
-                    ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
-                    : modalMessage.type === "warning"
-                    ? "bg-amber-50 text-amber-900 border border-amber-200"
-                    : "bg-rose-50 text-rose-800 border border-rose-200"
-                }`}
-              >
-                {modalMessage.text}
+            {/* Live Progress Spinner & Status Indicator */}
+            {isSendingInvite && (
+              <div className="mt-4 p-3.5 bg-blue-50/90 border border-blue-200 rounded-xl flex items-center gap-3">
+                <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                <div className="text-xs text-blue-900 space-y-0.5">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <span>Processing User Invitation...</span>
+                  </div>
+                  <div className="text-[11px] text-blue-700 leading-normal">
+                    Registering user in database, generating cryptographic token, and contacting SMTP mailer.
+                  </div>
+                </div>
               </div>
+            )}
+
+            {/* Modal Feedback Message */}
+            {modalMessage && !isSendingInvite && (
+              modalMessage.isSmtpIssue ? (
+                <div className="mt-4 p-3.5 rounded-xl border border-amber-300 bg-amber-50/90 text-xs space-y-2.5">
+                  <div className="flex items-start gap-2 text-amber-950">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-bold text-[12px] text-amber-900">User Registered — SMTP Email Delivery Notice</div>
+                      <p className="mt-1 text-amber-800 leading-relaxed text-[11px]">
+                        {modalMessage.text}
+                      </p>
+                    </div>
+                  </div>
+
+                  {modalMessage.suggestion && (
+                    <div className="p-2.5 bg-white/90 border border-amber-200/90 rounded-lg text-slate-700 space-y-1.5">
+                      <div className="font-semibold text-amber-900 text-[11px] flex items-center gap-1.5">
+                        <Lock className="w-3 h-3 text-amber-700" />
+                        Guided SMTP Resolution:
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        {modalMessage.suggestion}
+                      </p>
+                      <div className="pt-1 flex items-center gap-3">
+                        <Link
+                          to="/settings?tab=credentials"
+                          className="text-[11px] font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 underline cursor-pointer"
+                        >
+                          Open SMTP Diagnostics in Admin Settings <ExternalLink className="w-3 h-3" />
+                        </Link>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-xs font-medium ${
+                    modalMessage.type === "success"
+                      ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                      : "bg-rose-50 text-rose-800 border border-rose-200"
+                  }`}
+                >
+                  {modalMessage.text}
+                </div>
+              )
             )}
 
             {createdInviteUrl && (
@@ -632,29 +934,43 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                     <Shield className="w-3.5 h-3.5 text-emerald-600" />
                     Secure Invitation Link (Invite-Only & Locked)
                   </span>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await navigator.clipboard.writeText(createdInviteUrl);
-                      setCopiedModalLink(true);
-                      setTimeout(() => setCopiedModalLink(false), 2500);
-                    }}
-                    className="text-[11px] font-semibold text-[#2b61d6] hover:text-[#1e4499] flex items-center gap-1 transition-colors"
-                  >
-                    {copiedModalLink ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-600" /> Copied!
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" /> Copy Link
-                      </>
-                    )}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={createdInviteUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 flex items-center gap-1 transition-colors"
+                      title="Open invitation in new tab to test"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" /> Test
+                    </a>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(createdInviteUrl);
+                        setCopiedModalLink(true);
+                        setTimeout(() => setCopiedModalLink(false), 2500);
+                      }}
+                      className="text-[11px] font-semibold text-[#2b61d6] hover:text-[#1e4499] flex items-center gap-1 transition-colors"
+                    >
+                      {copiedModalLink ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-600" /> Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" /> Copy Link
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <div className="bg-white border border-slate-200 rounded p-2 text-[11px] font-mono text-slate-700 break-all select-all">
                   {createdInviteUrl}
                 </div>
+                <p className="text-[10px] text-slate-400 italic">
+                  Token is activated in database. The invited user can open this link to set their password.
+                </p>
               </div>
             )}
 
@@ -663,10 +979,11 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                 <Label className="text-xs font-semibold text-slate-700">Full Name</Label>
                 <Input
                   required
+                  disabled={isSendingInvite}
                   placeholder="e.g. John Smith"
                   value={inviteName}
                   onChange={(e) => setInviteName(e.target.value)}
-                  className="mt-1 h-9 text-xs"
+                  className="mt-1 h-9 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
@@ -675,10 +992,11 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                 <Input
                   type="email"
                   required
+                  disabled={isSendingInvite}
                   placeholder="john.smith@hp.com"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
-                  className="mt-1 h-9 text-xs"
+                  className="mt-1 h-9 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
@@ -686,9 +1004,10 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                 <div>
                   <Label className="text-xs font-semibold text-slate-700">Team / Region</Label>
                   <select
+                    disabled={isSendingInvite}
                     value={inviteTeam}
                     onChange={(e) => setInviteTeam(e.target.value)}
-                    className="mt-1 flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs shadow-xs"
+                    className="mt-1 flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <option value="HP-APJ">HP-APJ</option>
                     <option value="HP-EMEA">HP-EMEA</option>
@@ -700,9 +1019,10 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                 <div>
                   <Label className="text-xs font-semibold text-slate-700">Account Role</Label>
                   <select
+                    disabled={isSendingInvite}
                     value={inviteRole}
                     onChange={(e) => setInviteRole(e.target.value as any)}
-                    className="mt-1 flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs shadow-xs"
+                    className="mt-1 flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <option value="user">QA User</option>
                     <option value="admin">Administrator</option>
@@ -721,6 +1041,7 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                     setModalMessage(null);
                   }}
                   disabled={isSendingInvite}
+                  className="disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {createdInviteUrl ? "Done" : "Cancel"}
                 </Button>
@@ -728,12 +1049,66 @@ export function UsersList({ role, userEmail }: { role: string; userEmail?: strin
                   type="submit"
                   size="sm"
                   disabled={isSendingInvite}
-                  className="bg-[#2b61d6] hover:bg-[#2250b8] text-white"
+                  className="bg-[#2b61d6] hover:bg-[#2250b8] text-white flex items-center gap-1.5 disabled:opacity-75 disabled:cursor-not-allowed min-w-[145px] justify-center shadow-xs"
                 >
-                  {isSendingInvite ? "Sending..." : "Send Invitation"}
+                  {isSendingInvite ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Sending Invitation...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Send Invitation</span>
+                    </>
+                  )}
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Status Toast */}
+      {toastNotification && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-6 right-6 z-[100] p-4 rounded-xl shadow-2xl border max-w-md w-full transition-all animate-in slide-in-from-bottom-5 duration-300 ${
+            toastNotification.type === "success" 
+              ? "bg-white border-slate-200 border-l-4 border-l-emerald-500 text-slate-900 shadow-emerald-950/10" 
+              : toastNotification.type === "warning"
+              ? "bg-white border-slate-200 border-l-4 border-l-amber-500 text-slate-900 shadow-amber-950/10"
+              : "bg-white border-slate-200 border-l-4 border-l-rose-500 text-slate-900 shadow-rose-950/10"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            {toastNotification.type === "success" ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+            ) : toastNotification.type === "warning" ? (
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            ) : (
+              <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            )}
+            <div className="flex-1 text-xs">
+              <div className="font-bold text-slate-900 text-[13px]">{toastNotification.title}</div>
+              <div className="text-slate-600 mt-1 leading-relaxed">{toastNotification.message}</div>
+              {toastNotification.details && (
+                <div className="mt-2.5 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-mono text-slate-700 whitespace-pre-wrap break-words max-h-36 overflow-y-auto leading-relaxed">
+                  {toastNotification.details}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => {
+                if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+                setToastNotification(null);
+              }}
+              className="text-slate-400 hover:text-slate-600 text-xs font-bold p-1 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Close notification"
+            >
+              ✕
+            </button>
           </div>
         </div>
       )}

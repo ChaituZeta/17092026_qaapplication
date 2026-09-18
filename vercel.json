@@ -3,7 +3,7 @@
   "outputDirectory": "dist",
   "functions": {
     "api/index.ts": {
-      "includeFiles": "{app_state.json,app_credentials.json}",
+      "includeFiles": "{app_state.json,app_credentials.json,server/**}",
       "maxDuration": 30
     }
   },

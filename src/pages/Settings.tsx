@@ -4,17 +4,20 @@ import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import { 
   Database, Settings as SettingsIcon, Download, Upload, Shield, 
   CheckCircle2, XCircle, RefreshCw, Server, Key, Globe, Image as ImageIcon,
-  Save, AlertTriangle, Code, Terminal, Check, Lock, Sparkles, Mail
+  Save, AlertTriangle, Code, Terminal, Check, Lock, Sparkles, Mail,
+  Activity, Send, Wifi, AlertCircle, ExternalLink
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { DataManagementSection } from "../components/Settings/DataManagementSection";
 
 export function Settings({ role, userEmail }: { role: string; userEmail?: string }) {
   const isAdmin = role === "admin";
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialTab = searchParams.get("tab") || "credentials";
+  const tabParam = searchParams.get("tab");
+  const initialTab = (tabParam === "migration" || tabParam === "data-management") ? "data-management" : (tabParam || "credentials");
   const [activeTab, setActiveTab] = useState(initialTab);
 
   // Credentials / DB Secrets Tab State
@@ -32,17 +35,19 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
   const [storedCreds, setStoredCreds] = useState<any>({});
   const [isLoadingCreds, setIsLoadingCreds] = useState(false);
 
+  // SMTP Diagnostics & Test Email State
+  const [testEmailRecipient, setTestEmailRecipient] = useState(userEmail || "cbogineni@gmail.com");
+  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
+  const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
+  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
+  const [testEmailResult, setTestEmailResult] = useState<any>(null);
+
   // General Settings Tab State
   const [quickLoginEnabled, setQuickLoginEnabled] = useState(true);
   const [expandedLogo, setExpandedLogo] = useState("https://zetaglobal.com/wp-content/uploads/2023/02/zeta_logoPrimary.svg");
   const [collapsedLogo, setCollapsedLogo] = useState("https://companieslogo.com/img/orig/ZETA-424536bc.png");
   const [isSavingGeneral, setIsSavingGeneral] = useState(false);
   const [generalSaveMsg, setGeneralSaveMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
-
-  // Migration Tab State
-  const [isExporting, setIsExporting] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-  const [importResult, setImportResult] = useState<string | null>(null);
 
   const switchTab = (tab: string) => {
     setActiveTab(tab);
@@ -233,6 +238,60 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
     }
   };
 
+  const handleRunDiagnostics = async () => {
+    setIsRunningDiagnostics(true);
+    setDiagnosticResult(null);
+    try {
+      const res = await fetch("/api/smtp/diagnostics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await res.json();
+      setDiagnosticResult(data);
+    } catch (err: any) {
+      setDiagnosticResult({
+        success: false,
+        overallStatus: "failed",
+        details: err.message || "Failed to reach diagnostics endpoint.",
+        ports: []
+      });
+    } finally {
+      setIsRunningDiagnostics(false);
+    }
+  };
+
+  const handleSendTestEmail = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanRecipient = (testEmailRecipient || userEmail || "").trim();
+    if (!cleanRecipient) {
+      setTestEmailResult({
+        success: false,
+        error: "Please specify a recipient email address to send the test message."
+      });
+      return;
+    }
+
+    setIsSendingTestEmail(true);
+    setTestEmailResult(null);
+    try {
+      const res = await fetch("/api/smtp/test-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: cleanRecipient })
+      });
+      const data = await res.json();
+      setTestEmailResult(data);
+    } catch (err: any) {
+      setTestEmailResult({
+        success: false,
+        error: err.message || "Network request failed while sending test email.",
+        suggestion: "Check internet connectivity and server availability."
+      });
+    } finally {
+      setIsSendingTestEmail(false);
+    }
+  };
+
   const handleSaveGeneral = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingGeneral(true);
@@ -284,56 +343,6 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
     }
   };
 
-  const handleExportData = async () => {
-    setIsExporting(true);
-    try {
-      const response = await fetch("/api/export-migration-data");
-      if (!response.ok) throw new Error("Export failed");
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `hp_qa_platform_backup_${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } catch (err: any) {
-      alert("Failed to export backup: " + err.message);
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        setIsImporting(true);
-        setImportResult(null);
-        const parsed = JSON.parse(event.target?.result as string);
-        const response = await fetch("/api/import-migration-data", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(parsed)
-        });
-        const data = await response.json();
-        if (data.success) {
-          setImportResult(data.message || "Import completed successfully!");
-        } else {
-          setImportResult("Error: " + (data.error || "Failed to import data"));
-        }
-      } catch (err: any) {
-        setImportResult("Failed to parse JSON file: " + err.message);
-      } finally {
-        setIsImporting(false);
-      }
-    };
-    reader.readAsText(file);
-  };
-
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       {/* Header */}
@@ -374,15 +383,16 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
         </button>
 
         <button
-          onClick={() => switchTab("migration")}
+          id="tab-btn-data-management"
+          onClick={() => switchTab("data-management")}
           className={`pb-3 border-b-2 flex items-center gap-2 transition-colors cursor-pointer ${
-            activeTab === "migration"
+            activeTab === "data-management" || activeTab === "migration"
               ? "border-[#2b61d6] text-[#2b61d6] font-bold"
               : "border-transparent text-slate-500 hover:text-slate-800"
           }`}
         >
-          <Server className="w-4 h-4" />
-          Backup & Migration
+          <Database className="w-4 h-4" />
+          Data Management
         </button>
       </div>
 
@@ -585,6 +595,221 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
               </CardContent>
             </Card>
           </div>
+
+          {/* SMTP Diagnostics & Live Test Email Suite */}
+          <Card className="border-slate-200 shadow-xs">
+            <CardHeader className="border-b border-slate-100 bg-slate-50/50">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-blue-600" />
+                  <CardTitle className="text-sm text-slate-900">
+                    SMTP Diagnostics & Live Email Verification
+                  </CardTitle>
+                </div>
+                <div>
+                  {diagnosticResult ? (
+                    diagnosticResult.overallStatus === "healthy" ? (
+                      <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" /> All Ports Operational
+                      </span>
+                    ) : diagnosticResult.overallStatus === "degraded" ? (
+                      <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3 text-amber-600" /> Port Degraded
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-100 text-rose-800 border border-rose-200 flex items-center gap-1">
+                        <XCircle className="w-3 h-3 text-rose-600" /> Connection Failed
+                      </span>
+                    )
+                  ) : (
+                    <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                      Diagnostics Ready
+                    </span>
+                  )}
+                </div>
+              </div>
+              <CardDescription className="text-xs text-slate-500 mt-1">
+                Inspect live dual-port SMTP handshakes (Port 465 SSL Direct & Port 587 STARTTLS) and dispatch live test emails using credentials stored in the database.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-5 space-y-5">
+              {/* Dual Action Grid */}
+              <div className="grid md:grid-cols-2 gap-5">
+                {/* Action 1: Network Handshake Diagnostics */}
+                <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Wifi className="w-4 h-4 text-blue-600" />
+                    <h4 className="text-xs font-bold text-slate-800">1. Dual-Port Socket Handshake</h4>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Performs synchronous socket connection tests against Google SMTP servers on both SSL (465) and STARTTLS (587) with aggressive timeout guards.
+                  </p>
+                  <Button
+                    type="button"
+                    onClick={handleRunDiagnostics}
+                    disabled={isRunningDiagnostics}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold gap-1.5 h-9 cursor-pointer shadow-xs"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRunningDiagnostics ? "animate-spin" : ""}`} />
+                    {isRunningDiagnostics ? "Testing Port 465 & 587..." : "Run Port Diagnostics"}
+                  </Button>
+                </div>
+
+                {/* Action 2: Send Test Email */}
+                <form onSubmit={handleSendTestEmail} className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Send className="w-4 h-4 text-emerald-600" />
+                    <h4 className="text-xs font-bold text-slate-800">2. Dispatch Live Test Email</h4>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-semibold text-slate-700">Recipient Email</Label>
+                    <Input
+                      type="email"
+                      required
+                      placeholder="user@example.com"
+                      value={testEmailRecipient}
+                      onChange={(e) => setTestEmailRecipient(e.target.value)}
+                      className="h-8 text-xs bg-white"
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={isSendingTestEmail || !testEmailRecipient.trim()}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold gap-1.5 h-9 cursor-pointer shadow-xs"
+                  >
+                    <Send className={`w-3.5 h-3.5 ${isSendingTestEmail ? "animate-pulse" : ""}`} />
+                    {isSendingTestEmail ? "Dispatching Message..." : "Send Test Email"}
+                  </Button>
+                </form>
+              </div>
+
+              {/* Diagnostic Results Section */}
+              {diagnosticResult && (
+                <div className="space-y-3 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5 text-blue-600" />
+                      Diagnostic Handshake Results
+                    </span>
+                    {diagnosticResult.recommendedPort && (
+                      <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                        Recommended: Port {diagnosticResult.recommendedPort}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {Array.isArray(diagnosticResult.ports) && diagnosticResult.ports.map((p: any) => (
+                      <div
+                        key={p.port}
+                        className={`p-3.5 rounded-lg border text-xs space-y-1.5 ${
+                          p.status === "connected"
+                            ? "bg-emerald-50/70 border-emerald-200 text-emerald-950"
+                            : "bg-rose-50/70 border-rose-200 text-rose-950"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold font-mono text-[13px]">
+                            Port {p.port}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 text-[10px] font-bold rounded-full uppercase tracking-wider ${
+                              p.status === "connected"
+                                ? "bg-emerald-200 text-emerald-800"
+                                : "bg-rose-200 text-rose-800"
+                            }`}
+                          >
+                            {p.status}
+                          </span>
+                        </div>
+                        <div className="text-[11px] opacity-80 font-medium">
+                          Mode: {p.mode}
+                        </div>
+                        {p.latencyMs ? (
+                          <div className="text-[11px] opacity-90 font-mono">
+                            Latency: {p.latencyMs}ms
+                          </div>
+                        ) : null}
+                        {p.error && (
+                          <div className="text-[11px] text-rose-700 font-mono mt-1 break-words">
+                            Error: {p.error}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {diagnosticResult.details && (
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                      <span>{diagnosticResult.details}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Test Email Result Section */}
+              {testEmailResult && (
+                <div className="pt-2 border-t border-slate-100">
+                  {testEmailResult.success ? (
+                    <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2 text-xs text-emerald-900">
+                      <div className="flex items-center gap-2 font-bold text-emerald-800 text-sm">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        Test Message Successfully Dispatched!
+                      </div>
+                      <p className="text-emerald-700">
+                        {testEmailResult.message}
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
+                        <div className="bg-emerald-100/60 p-1.5 rounded">
+                          <span className="text-emerald-700 block text-[10px] font-sans font-semibold">Port</span>
+                          {testEmailResult.port}
+                        </div>
+                        <div className="bg-emerald-100/60 p-1.5 rounded">
+                          <span className="text-emerald-700 block text-[10px] font-sans font-semibold">Latency</span>
+                          {testEmailResult.latencyMs ? `${testEmailResult.latencyMs}ms` : "N/A"}
+                        </div>
+                        <div className="bg-emerald-100/60 p-1.5 rounded col-span-2 truncate">
+                          <span className="text-emerald-700 block text-[10px] font-sans font-semibold">Sender</span>
+                          {testEmailResult.sender}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl space-y-2.5 text-xs text-rose-900">
+                      <div className="flex items-center gap-2 font-bold text-rose-800 text-sm">
+                        <AlertCircle className="w-4 h-4 text-rose-600" />
+                        Test Email Delivery Failed
+                      </div>
+                      <div className="p-2.5 bg-rose-100/70 rounded font-mono text-[11px] text-rose-800 break-words">
+                        {testEmailResult.error}
+                      </div>
+                      {testEmailResult.suggestion && (
+                        <div className="p-2.5 bg-amber-50 border border-amber-200 rounded text-amber-900 space-y-1">
+                          <div className="font-semibold flex items-center gap-1.5 text-amber-800">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            How to Resolve:
+                          </div>
+                          <p className="text-[11px] leading-relaxed">
+                            {testEmailResult.suggestion}
+                          </p>
+                          <a
+                            href="https://myaccount.google.com/apppasswords"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline mt-1"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            Open Google App Passwords settings
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       )}
 
@@ -665,79 +890,9 @@ export function Settings({ role, userEmail }: { role: string; userEmail?: string
         </Card>
       )}
 
-      {/* Tab: Migration */}
-      {activeTab === "migration" && (
-        <div className="space-y-6">
-          <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200/80 text-emerald-950 text-xs flex items-start gap-3">
-            <Shield className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-            <div>
-              <span className="font-bold">Migration Preservation Guarantee:</span> Database migrations and snapshot imports strictly preserve your existing <code>.env</code> file and credentials intact. Your database connection settings are never overwritten, replaced, or deleted during migrations.
-            </div>
-          </div>
-
-          <Card className="border-slate-200 shadow-xs">
-            <CardHeader className="border-b border-slate-100 bg-slate-50/50">
-              <CardTitle className="text-base text-slate-900 flex items-center gap-2">
-                <Server className="w-4 h-4 text-[#2b61d6]" />
-                Backup & Data Migration
-              </CardTitle>
-              <CardDescription className="text-xs text-slate-500">
-                Export and import complete database snapshots including campaigns, folders, users, and activity logs.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="p-6 space-y-6">
-              {importResult && (
-                <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-blue-900 text-xs font-medium">
-                  {importResult}
-                </div>
-              )}
-
-              <div className="grid md:grid-cols-2 gap-6">
-                {/* Export Card */}
-                <div className="p-5 border border-slate-200 rounded-xl bg-white space-y-3">
-                  <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <Download className="w-4 h-4 text-[#2b61d6]" />
-                    Export Full Platform Snapshot
-                  </h4>
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    Download a standardized JSON archive with all campaigns, QA results, users, folders, and audit logs.
-                  </p>
-                  <Button
-                    onClick={handleExportData}
-                    disabled={isExporting}
-                    variant="outline"
-                    className="w-full text-xs font-semibold gap-1.5"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    {isExporting ? "Exporting..." : "Download JSON Backup"}
-                  </Button>
-                </div>
-
-                {/* Import Card */}
-                <div className="p-5 border border-slate-200 rounded-xl bg-white space-y-3">
-                  <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <Upload className="w-4 h-4 text-[#2b61d6]" />
-                    Import Snapshot
-                  </h4>
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    Restore previously exported campaigns and user state from a JSON backup file.
-                  </p>
-                  <label className="flex items-center justify-center gap-2 w-full h-9 px-4 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer shadow-xs transition-colors">
-                    <Upload className="w-3.5 h-3.5" />
-                    {isImporting ? "Importing..." : "Select Backup JSON File"}
-                    <input
-                      type="file"
-                      accept=".json"
-                      onChange={handleImportFile}
-                      disabled={isImporting}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+      {/* Tab: Data Management */}
+      {(activeTab === "data-management" || activeTab === "migration") && (
+        <DataManagementSection isAdmin={isAdmin} role={role} userEmail={userEmail} />
       )}
     </div>
   );

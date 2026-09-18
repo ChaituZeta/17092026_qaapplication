@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { getCampaignCheckpointProgress } from "@/lib/checklist-utils";
 import { CampaignStatusChart } from "../components/Dashboard/CampaignStatusChart";
+import { SummaryDashboardWidget } from "../components/Dashboard/SummaryDashboardWidget";
 import { resolveUserFullName, resolveUserFirstName, loadAppUsersMetadata } from "@/lib/userNames";
 
 interface DashboardProps {
@@ -763,6 +764,15 @@ export function Dashboard({ userEmail, userRole }: DashboardProps) {
                 </p>
               </div>
             </div>
+
+            {/* Summary Dashboard Widget: Quick Metrics with Recharts */}
+            <SummaryDashboardWidget
+              campaigns={campaigns}
+              userStatsList={userStatsList}
+              onNavigateToCampaigns={() => navigate("/campaigns")}
+              onNavigateToUsers={() => navigate("/users")}
+              onNavigateToChecklists={() => navigate("/checklists")}
+            />
 
             {/* Middle Section: Overview, Countries & User-Wise Campaign Count */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

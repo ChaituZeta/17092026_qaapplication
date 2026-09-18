@@ -10,8 +10,218 @@ import { buildDynamicSignupUrl, resolveRequestOrigin, sendEmailWithAutoFallback 
 
 export const router = Router();
 
+/**
+ * Persists an invitation token across all storage tiers:
+ * 1. app_credentials (INVITE_${token}) - 100% resilient across serverless instances and lambdas
+ * 2. invitations table (if exists in user's Supabase schema)
+ * 3. app_users table (with fallback if invite_token column does not exist)
+ */
+async function persistInvitationTokenInDb(
+  client: any,
+  inv: {
+    token: string;
+    email: string;
+    name: string;
+    role: string;
+    team: string;
+    expires_at: string;
+  }
+) {
+  if (!client) return;
+
+  // 1. Store in app_credentials (globally accessible across all serverless function instances)
+  try {
+    const credKey = `INVITE_${inv.token}`;
+    const credPayload = JSON.stringify({
+      token: inv.token,
+      email: inv.email,
+      name: inv.name,
+      role: inv.role,
+      team: inv.team,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      expires_at: inv.expires_at
+    });
+    const { error: credErr } = await client.from("app_credentials").upsert({
+      key: credKey,
+      value: credPayload,
+      description: `User Invitation Token for ${inv.email}`,
+      updated_at: new Date().toISOString()
+    }, { onConflict: "key" });
+
+    if (credErr) {
+      console.warn(`[Invite Persist] app_credentials upsert note: ${credErr.message}`);
+    } else {
+      console.log(`[Invite Persist] Successfully persisted ${credKey} to app_credentials.`);
+    }
+  } catch (e: any) {
+    console.warn(`[Invite Persist] app_credentials exception: ${e.message}`);
+  }
+
+  // 2. Also try invitations table (if created in Supabase)
+  try {
+    const { error: invErr } = await client.from("invitations").upsert({
+      token: inv.token,
+      email: inv.email,
+      name: inv.name,
+      role: inv.role,
+      team: inv.team,
+      status: "pending",
+      expires_at: inv.expires_at
+    }, { onConflict: "token" });
+    if (!invErr) {
+      console.log(`[Invite Persist] Successfully stored invitation in invitations table.`);
+    }
+  } catch {}
+
+  // 3. Upsert user into app_users table with status 'invited'
+  try {
+    const fullPayload = {
+      name: inv.name,
+      email: inv.email,
+      role: inv.role,
+      team: inv.team,
+      status: "invited",
+      invite_token: inv.token,
+      last_login: "Never"
+    };
+    const { error: uErr } = await client.from("app_users").upsert(fullPayload, { onConflict: "email" });
+    if (uErr) {
+      console.log(`[Invite Persist] app_users upsert with invite_token returned note: ${uErr.message}. Retrying with standard columns...`);
+      // Retry without invite_token column so user record is reliably created in app_users
+      const { invite_token, ...standardPayload } = fullPayload;
+      const { error: retryErr } = await client.from("app_users").upsert(standardPayload, { onConflict: "email" });
+      if (retryErr) {
+        console.error(`[Invite Persist] app_users standard upsert error: ${retryErr.message}`);
+      } else {
+        console.log(`[Invite Persist] Successfully created user record in app_users (standard schema).`);
+      }
+    } else {
+      console.log(`[Invite Persist] Successfully created user record in app_users with invite_token.`);
+    }
+  } catch (err: any) {
+    console.error(`[Invite Persist] app_users exception: ${err.message}`);
+  }
+}
+
+/**
+ * Retrieves invitation data by token checking:
+ * 1. app_credentials (INVITE_${token})
+ * 2. invitations table
+ * 3. app_users table (invite_token column)
+ * 4. in-memory appState
+ */
+async function lookupInvitationToken(client: any, token: string): Promise<any | null> {
+  // 1. Check in Supabase app_credentials
+  if (client) {
+    try {
+      const { data: credRow, error: credErr } = await client
+        .from("app_credentials")
+        .select("value")
+        .eq("key", `INVITE_${token}`)
+        .maybeSingle();
+      if (!credErr && credRow?.value) {
+        try {
+          const parsed = JSON.parse(credRow.value);
+          if (parsed && parsed.email) {
+            console.log(`[Invite Lookup] Found valid token in app_credentials for: ${parsed.email}`);
+            return parsed;
+          }
+        } catch {}
+      }
+    } catch (e: any) {
+      console.warn(`[Invite Lookup] app_credentials check note: ${e.message}`);
+    }
+
+    // 2. Check in invitations table
+    try {
+      const { data: dbInv, error: invErr } = await client
+        .from("invitations")
+        .select("*")
+        .eq("token", token)
+        .maybeSingle();
+      if (!invErr && dbInv) {
+        console.log(`[Invite Lookup] Found valid token in invitations table for: ${dbInv.email}`);
+        return dbInv;
+      }
+    } catch {}
+
+    // 3. Check in app_users table
+    try {
+      const { data: dbUser, error: userErr } = await client
+        .from("app_users")
+        .select("*")
+        .eq("invite_token", token)
+        .maybeSingle();
+      if (!userErr && dbUser) {
+        console.log(`[Invite Lookup] Found valid token in app_users table for: ${dbUser.email}`);
+        return {
+          token,
+          email: dbUser.email,
+          name: dbUser.name,
+          role: dbUser.role,
+          team: dbUser.team,
+          status: dbUser.status === "active" ? "accepted" : "pending"
+        };
+      }
+    } catch {}
+  }
+
+  // 4. Check in server state
+  if (Array.isArray(currentAppState.invitations)) {
+    const memInv = currentAppState.invitations.find((i: any) => i.token === token);
+    if (memInv) {
+      console.log(`[Invite Lookup] Found token in local server state for: ${memInv.email}`);
+      return memInv;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Marks an invitation token as accepted
+ */
+async function consumeInvitationToken(client: any, token: string) {
+  if (client) {
+    try {
+      const credKey = `INVITE_${token}`;
+      const { data: credRow } = await client.from("app_credentials").select("value").eq("key", credKey).maybeSingle();
+      if (credRow?.value) {
+        try {
+          const parsed = JSON.parse(credRow.value);
+          parsed.status = "accepted";
+          parsed.accepted_at = new Date().toISOString();
+          await client.from("app_credentials").upsert({
+            key: credKey,
+            value: JSON.stringify(parsed),
+            description: `Accepted User Invitation Token`,
+            updated_at: new Date().toISOString()
+          }, { onConflict: "key" });
+        } catch {}
+      }
+    } catch {}
+
+    try {
+      await client.from("invitations").update({
+        status: "accepted",
+        accepted_at: new Date().toISOString()
+      }).eq("token", token);
+    } catch {}
+  }
+
+  if (Array.isArray(currentAppState.invitations)) {
+    const invIdx = currentAppState.invitations.findIndex((i: any) => i.token === token);
+    if (invIdx >= 0) {
+      currentAppState.invitations[invIdx].status = "accepted";
+      currentAppState.invitations[invIdx].accepted_at = new Date().toISOString();
+      saveAppState(currentAppState);
+    }
+  }
+}
+
 router.post("/api/invite", async (req, res) => {
-  const { name, email, role, team, origin } = req.body || {};
+  const { name, email, role, team, origin, token: providedToken } = req.body || {};
 
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
@@ -24,9 +234,15 @@ router.post("/api/invite", async (req, res) => {
   }
   cleanName = sanitizeGreetingName(cleanName, "Team Member");
 
-  // Generate cryptographically unique invitation token
-  const token = "inv_" + crypto.randomBytes(24).toString("hex");
+  console.log(`[Invite API] [1/5] Incoming invitation request for: "${cleanEmail}" (name: "${cleanName}", role: "${role || 'user'}", team: "${team || 'HP-APJ'}")`);
+
+  // Use provided client token if valid, or generate cryptographically unique invitation token
+  const token = (providedToken && typeof providedToken === "string" && providedToken.startsWith("inv_"))
+    ? providedToken.trim()
+    : "inv_" + crypto.randomBytes(24).toString("hex");
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  console.log(`[Invite API] [2/5] Token generated: ${token.substring(0, 10)}... (Expires: ${expiresAt})`);
 
   // Save to server app state
   currentAppState.invitations = currentAppState.invitations || [];
@@ -43,50 +259,33 @@ router.post("/api/invite", async (req, res) => {
   });
   saveAppState(currentAppState);
 
-  // Sync token to Supabase if configured
+  // Sync token to Supabase across all resilient tiers
+  console.log(`[Invite API] [3/5] Persisting invitation and user record to Supabase...`);
   const supabaseUrl = getSupabaseUrl();
   const supabaseKey = getSupabaseServiceKey() || getSupabaseAnonKey();
   if (supabaseUrl && supabaseKey) {
     try {
       const { createClient } = await import("@supabase/supabase-js");
       const client = createClient(supabaseUrl, supabaseKey);
-
-      // 1. Try to record in invitations table
-      try {
-        await client.from("invitations").upsert({
-          token,
-          email: cleanEmail,
-          name: cleanName,
-          role: role || "user",
-          team: team || "HP-APJ",
-          status: "pending",
-          expires_at: expiresAt
-        }, { onConflict: "token" });
-      } catch (invErr) {
-        // invitations table may not exist yet in user's schema, continue
-      }
-
-      // 2. Also record in app_users table
-      try {
-        await client.from("app_users").upsert({
-          name: cleanName,
-          email: cleanEmail,
-          role: role || "user",
-          team: team || "HP-APJ",
-          status: "invited",
-          invite_token: token
-        }, { onConflict: "email" });
-      } catch (uErr) {
-        // app_users fallback
-      }
-    } catch (dbErr) {
-      console.warn("[Invite API] Supabase invite token sync warning:", dbErr);
+      await persistInvitationTokenInDb(client, {
+        token,
+        email: cleanEmail,
+        name: cleanName,
+        role: role || "user",
+        team: team || "HP-APJ",
+        expires_at: expiresAt
+      });
+    } catch (dbErr: any) {
+      console.warn("[Invite API] Supabase persistence error note:", dbErr.message);
     }
   }
 
   // Construct secure tokenized URL: strictly no email query parameter
   const reqOrigin = resolveRequestOrigin(req, origin);
   const effectiveInviteUrl = `${reqOrigin}/signup?token=${token}`;
+
+  console.log(`[Invite API] [4/5] Generated invitation URL: ${effectiveInviteUrl}`);
+  console.log(`[Invite API] [5/5] Attempting automated email delivery via SMTP...`);
 
   try {
     const mailResult = await sendEmailWithAutoFallback({
@@ -101,8 +300,11 @@ router.post("/api/invite", async (req, res) => {
       }),
     });
 
+    console.log(`[Invite API] Email successfully delivered to ${cleanEmail} via ${mailResult.host}:${mailResult.port} (Sender: ${mailResult.user})`);
+
     return res.json({
       success: true,
+      emailSent: true,
       deliveredVia: "smtp",
       port: mailResult.port,
       sender: mailResult.user,
@@ -111,14 +313,25 @@ router.post("/api/invite", async (req, res) => {
       message: `Invitation email sent successfully to ${cleanEmail} via Gmail SMTP (${mailResult.user})!`
     });
   } catch (error: any) {
-    console.error("[Invite API] Error sending invitation email:", error.message);
-    return res.status(500).json({
-      success: false,
+    console.error(`[Invite API] SMTP delivery failure for ${cleanEmail}: ${error.message} (code: ${error.code || 'UNKNOWN'})`);
+    let suggestion = "Check your SMTP sender email and Google 16-character App Password in Settings > Credentials.";
+    if (error.message?.includes("535")) {
+      suggestion = "Gmail authentication rejected (Error 535). Please verify your Google 16-character App Password at myaccount.google.com/apppasswords.";
+    } else if (error.message?.includes("ETIMEDOUT") || error.message?.includes("ECONNREFUSED")) {
+      suggestion = "Connection to SMTP server timed out. Check outbound port accessibility or network firewall.";
+    }
+
+    // Return HTTP 200 with structured status so the invitation link remains valid and accessible
+    return res.status(200).json({
+      success: true,
+      emailSent: false,
       deliveredVia: "none",
       token,
-      error: error.message || "Failed to send invitation email via SMTP.",
       inviteUrl: effectiveInviteUrl,
-      message: `Failed to send email: ${error.message}. You can manually share the secure signup link.`
+      error: error.message || "Failed to send invitation email via SMTP.",
+      errorCode: error.code || "SMTP_ERROR",
+      smtpSuggestion: suggestion,
+      message: `User created & token active in database, but automated email failed: ${error.message}. You can share the invitation link directly.`
     });
   }
 });
@@ -128,14 +341,27 @@ router.post("/api/invite", async (req, res) => {
  * Used by admin "Copy Invite Link" and "Resend Invite" to ensure unique tokenized links.
  */
 router.post("/api/invite/token", async (req, res) => {
-  const { email, name, role, team, origin } = req.body || {};
+  const { email, name, role, team, origin, token: providedToken } = req.body || {};
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
   }
   const cleanEmail = String(email).trim().toLowerCase();
 
-  let token = "";
-  if (Array.isArray(currentAppState.invitations)) {
+  let token = (providedToken && typeof providedToken === "string" && providedToken.startsWith("inv_"))
+    ? providedToken.trim()
+    : "";
+
+  const supabaseUrl = getSupabaseUrl();
+  const supabaseKey = getSupabaseServiceKey() || getSupabaseAnonKey();
+  let client: any = null;
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const { createClient } = await import("@supabase/supabase-js");
+      client = createClient(supabaseUrl, supabaseKey);
+    } catch {}
+  }
+
+  if (!token && Array.isArray(currentAppState.invitations)) {
     const existing = currentAppState.invitations.find(
       (i: any) => i.email === cleanEmail && i.status === "pending" && (!i.expires_at || new Date(i.expires_at) > new Date())
     );
@@ -146,48 +372,32 @@ router.post("/api/invite/token", async (req, res) => {
 
   if (!token) {
     token = "inv_" + crypto.randomBytes(24).toString("hex");
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    currentAppState.invitations = currentAppState.invitations || [];
-    currentAppState.invitations = currentAppState.invitations.filter((i: any) => i.email !== cleanEmail);
-    currentAppState.invitations.push({
+  }
+
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  currentAppState.invitations = currentAppState.invitations || [];
+  currentAppState.invitations = currentAppState.invitations.filter((i: any) => i.email !== cleanEmail);
+  currentAppState.invitations.push({
+    token,
+    email: cleanEmail,
+    name: name || cleanEmail.split("@")[0],
+    role: role || "user",
+    team: team || "HP-APJ",
+    status: "pending",
+    created_at: new Date().toISOString(),
+    expires_at: expiresAt
+  });
+  saveAppState(currentAppState);
+
+  if (client) {
+    await persistInvitationTokenInDb(client, {
       token,
       email: cleanEmail,
       name: name || cleanEmail.split("@")[0],
       role: role || "user",
       team: team || "HP-APJ",
-      status: "pending",
-      created_at: new Date().toISOString(),
       expires_at: expiresAt
     });
-    saveAppState(currentAppState);
-
-    const supabaseUrl = getSupabaseUrl();
-    const supabaseKey = getSupabaseServiceKey() || getSupabaseAnonKey();
-    if (supabaseUrl && supabaseKey) {
-      try {
-        const { createClient } = await import("@supabase/supabase-js");
-        const client = createClient(supabaseUrl, supabaseKey);
-        try {
-          await client.from("invitations").upsert({
-            token,
-            email: cleanEmail,
-            name: name || cleanEmail.split("@")[0],
-            role: role || "user",
-            team: team || "HP-APJ",
-            status: "pending",
-            expires_at: expiresAt
-          }, { onConflict: "token" });
-        } catch {}
-
-        try {
-          await client.from("app_users").upsert({
-            email: cleanEmail,
-            invite_token: token,
-            status: "invited"
-          }, { onConflict: "email" });
-        } catch {}
-      } catch {}
-    }
   }
 
   const reqOrigin = resolveRequestOrigin(req, origin);
@@ -205,49 +415,17 @@ router.get("/api/invite/verify", async (req, res) => {
     return res.status(400).json({ valid: false, error: "Invitation token is required." });
   }
 
-  // 1. Check in server state
-  let invitation: any = null;
-  if (Array.isArray(currentAppState.invitations)) {
-    invitation = currentAppState.invitations.find((i: any) => i.token === token);
-  }
-
-  // 2. Check in Supabase
   const supabaseUrl = getSupabaseUrl();
   const supabaseKey = getSupabaseServiceKey() || getSupabaseAnonKey();
+  let client: any = null;
   if (supabaseUrl && supabaseKey) {
     try {
       const { createClient } = await import("@supabase/supabase-js");
-      const client = createClient(supabaseUrl, supabaseKey);
-
-      const { data: dbInv } = await client
-        .from("invitations")
-        .select("*")
-        .eq("token", token)
-        .maybeSingle();
-
-      if (dbInv) {
-        invitation = dbInv;
-      } else {
-        const { data: dbUser } = await client
-          .from("app_users")
-          .select("*")
-          .eq("invite_token", token)
-          .maybeSingle();
-        if (dbUser) {
-          invitation = {
-            token,
-            email: dbUser.email,
-            name: dbUser.name,
-            role: dbUser.role,
-            team: dbUser.team,
-            status: dbUser.status === "active" ? "accepted" : "pending"
-          };
-        }
-      }
-    } catch (e) {
-      console.warn("[Invite Verify API] Note checking Supabase:", e);
-    }
+      client = createClient(supabaseUrl, supabaseKey);
+    } catch {}
   }
+
+  const invitation = await lookupInvitationToken(client, token);
 
   if (!invitation) {
     return res.status(404).json({
@@ -297,12 +475,6 @@ router.post("/api/signup", async (req, res) => {
     return res.status(400).json({ error: "Password must be at least 6 characters." });
   }
 
-  // Look up invitation strictly by token
-  let invitation: any = null;
-  if (Array.isArray(currentAppState.invitations)) {
-    invitation = currentAppState.invitations.find((i: any) => i.token === token);
-  }
-
   const supabaseUrl = getSupabaseUrl();
   const supabaseKey = getSupabaseServiceKey() || getSupabaseAnonKey();
   let client: any = null;
@@ -310,24 +482,11 @@ router.post("/api/signup", async (req, res) => {
     try {
       const { createClient } = await import("@supabase/supabase-js");
       client = createClient(supabaseUrl, supabaseKey);
-      const { data: dbInv } = await client.from("invitations").select("*").eq("token", token).maybeSingle();
-      if (dbInv) {
-        invitation = dbInv;
-      } else {
-        const { data: dbUser } = await client.from("app_users").select("*").eq("invite_token", token).maybeSingle();
-        if (dbUser) {
-          invitation = {
-            token,
-            email: dbUser.email,
-            name: dbUser.name,
-            role: dbUser.role,
-            team: dbUser.team,
-            status: dbUser.status === "active" ? "accepted" : "pending"
-          };
-        }
-      }
-    } catch (e) {}
+    } catch {}
   }
+
+  // Look up invitation strictly by token
+  const invitation = await lookupInvitationToken(client, token);
 
   if (!invitation) {
     return res.status(400).json({ error: "Invalid invitation token. Registration cannot proceed." });
@@ -368,39 +527,42 @@ router.post("/api/signup", async (req, res) => {
     }
   }
 
-  // 2. Activate user in app_users table
-  const userPayload = {
+  // 2. Activate user in app_users table (with graceful fallback if invite_token column missing)
+  const baseUserPayload = {
     name: cleanName,
     email: cleanEmail,
     role: cleanRole,
     team: cleanTeam,
     status: "active",
-    invite_token: null, // Token consumed
     last_login: new Date().toISOString()
   };
 
   if (client) {
     try {
-      await client.from("app_users").upsert(userPayload, { onConflict: "email" });
+      const { error: upErr } = await client.from("app_users").upsert({ ...baseUserPayload, invite_token: null }, { onConflict: "email" });
+      if (upErr) {
+        await client.from("app_users").upsert(baseUserPayload, { onConflict: "email" });
+      }
     } catch (e) {
-      console.warn("[Server API] app_users upsert note:", e);
+      try {
+        await client.from("app_users").upsert(baseUserPayload, { onConflict: "email" });
+      } catch (err2) {
+        console.warn("[Server API] app_users activation note:", err2);
+      }
     }
-    // Mark invitation as accepted
-    try {
-      await client.from("invitations").update({
-        status: "accepted",
-        accepted_at: new Date().toISOString()
-      }).eq("token", token);
-    } catch (e) {}
+    // Mark invitation as accepted across all tiers
+    await consumeInvitationToken(client, token);
+  } else {
+    await consumeInvitationToken(null, token);
   }
 
   // 3. Update server state
   currentAppState.users = currentAppState.users || [];
   const uIdx = currentAppState.users.findIndex((u: any) => (u.email || "").toLowerCase() === cleanEmail);
   if (uIdx >= 0) {
-    currentAppState.users[uIdx] = { ...currentAppState.users[uIdx], ...userPayload };
+    currentAppState.users[uIdx] = { ...currentAppState.users[uIdx], ...baseUserPayload };
   } else {
-    currentAppState.users.push(userPayload as any);
+    currentAppState.users.push(baseUserPayload as any);
   }
 
   if (Array.isArray(currentAppState.invitations)) {

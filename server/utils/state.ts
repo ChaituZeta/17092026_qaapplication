@@ -90,11 +90,13 @@ export function loadAppState(): ServerAppState {
       const quick_login_enabled = parsed.quick_login_enabled !== undefined ? Boolean(parsed.quick_login_enabled) : true;
       let users = Array.isArray(parsed.users) ? parsed.users : defaultAppState.users;
       let ai_agents = Array.isArray(parsed.ai_agents) ? parsed.ai_agents : undefined;
+      let invitations = Array.isArray(parsed.invitations) ? parsed.invitations : [];
 
       return { 
         quick_login_enabled, 
         users, 
-        ai_agents
+        ai_agents,
+        invitations
       };
     }
   } catch (err) {
@@ -107,7 +109,8 @@ export function loadAppState(): ServerAppState {
     return {
       quick_login_enabled: parsed.quick_login_enabled !== undefined ? Boolean(parsed.quick_login_enabled) : true,
       users: Array.isArray(parsed.users) ? parsed.users : defaultAppState.users,
-      ai_agents: Array.isArray(parsed.ai_agents) ? parsed.ai_agents : undefined
+      ai_agents: Array.isArray(parsed.ai_agents) ? parsed.ai_agents : undefined,
+      invitations: Array.isArray(parsed.invitations) ? parsed.invitations : []
     };
   }
 

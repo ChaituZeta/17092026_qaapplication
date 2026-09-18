@@ -150,15 +150,237 @@ export function createSmtpTransporter(
     tls: {
       rejectUnauthorized: false,
     },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 10000,
   });
 }
 
 // Backward compatibility alias
 export const createGmailTransporter = (user: string, pass: string, port: 465 | 587 = 465) =>
   createSmtpTransporter("smtp.gmail.com", port, user, pass, port === 465);
+
+export interface SmtpPortDiagnostic {
+  port: number;
+  mode: string;
+  status: "connected" | "failed";
+  latencyMs: number;
+  error?: string;
+  code?: string;
+}
+
+export interface SmtpDiagnosticResult {
+  host: string;
+  configuredUser: string;
+  hasPassword: boolean;
+  overallStatus: "healthy" | "partial" | "unconfigured" | "failed";
+  recommendedPort: number;
+  ports: SmtpPortDiagnostic[];
+  details: string;
+  timestamp: string;
+}
+
+/**
+ * Diagnostic tool to thoroughly test SMTP configuration, port connectivity, and authentication
+ */
+export async function runSmtpDiagnostics(overrideUser?: string, overridePass?: string): Promise<SmtpDiagnosticResult> {
+  const host = (await getAppCredentialFromDB("SMTP_HOST")) || process.env.SMTP_HOST || "smtp.gmail.com";
+  const user = (overrideUser || "").trim() ||
+    (await getAppCredentialFromDB("SMTP_USER")) ||
+    (await getAppCredentialFromDB("GMAIL_USER")) ||
+    process.env.SMTP_USER ||
+    process.env.GMAIL_USER ||
+    "";
+  const pass = (overridePass || "").trim().replace(/\s+/g, "").replace(/["']/g, "") ||
+    (await getAppCredentialFromDB("SMTP_PASS")) ||
+    (await getAppCredentialFromDB("SMTP_PASSWORD")) ||
+    (await getAppCredentialFromDB("GMAIL_APP_PASSWORD")) ||
+    process.env.SMTP_PASS ||
+    process.env.SMTP_PASSWORD ||
+    process.env.GMAIL_APP_PASSWORD ||
+    "";
+
+  const cleanUser = user.trim();
+  const cleanPass = pass.trim();
+  const hasPassword = cleanPass.length > 0 && !cleanPass.includes("placeholder");
+
+  if (!cleanUser || !hasPassword) {
+    return {
+      host,
+      configuredUser: cleanUser,
+      hasPassword,
+      overallStatus: "unconfigured",
+      recommendedPort: 465,
+      ports: [],
+      details: !cleanUser
+        ? "Sender email is not configured in database."
+        : "App password is missing or set to default placeholder.",
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  const portsToTest = [
+    { port: 465, mode: "SSL / TLS (Direct)", secure: true },
+    { port: 587, mode: "STARTTLS (Explicit)", secure: false }
+  ];
+
+  const results: SmtpPortDiagnostic[] = [];
+
+  for (const p of portsToTest) {
+    const t0 = Date.now();
+    try {
+      console.log(`[SMTP Diagnostic] Testing ${host}:${p.port} (${p.mode}) with ${cleanUser}...`);
+      const transporter = createSmtpTransporter(host, p.port, cleanUser, cleanPass, p.secure);
+      await transporter.verify();
+      const latency = Date.now() - t0;
+      console.log(`[SMTP Diagnostic] ${host}:${p.port} succeeded in ${latency}ms`);
+      results.push({
+        port: p.port,
+        mode: p.mode,
+        status: "connected",
+        latencyMs: latency
+      });
+    } catch (err: any) {
+      const latency = Date.now() - t0;
+      console.warn(`[SMTP Diagnostic] ${host}:${p.port} failed in ${latency}ms:`, err.message);
+      let cleanErr = err.message || "Connection failed";
+      if (cleanErr.includes("535") || cleanErr.includes("Username and Password not accepted")) {
+        cleanErr = "Google 535 Authentication Error: 16-character App Password was rejected by Gmail. Verify at myaccount.google.com/apppasswords";
+      }
+      results.push({
+        port: p.port,
+        mode: p.mode,
+        status: "failed",
+        latencyMs: latency,
+        error: cleanErr,
+        code: err.code || "AUTH_OR_CONN_ERR"
+      });
+    }
+  }
+
+  const connectedPorts = results.filter(r => r.status === "connected");
+  let overallStatus: "healthy" | "partial" | "unconfigured" | "failed" = "failed";
+  let recommendedPort = 465;
+
+  if (connectedPorts.length === 2) {
+    overallStatus = "healthy";
+    recommendedPort = 465;
+  } else if (connectedPorts.length === 1) {
+    overallStatus = "partial";
+    recommendedPort = connectedPorts[0].port;
+  }
+
+  let details = "";
+  if (overallStatus === "healthy") {
+    details = `Both SSL (465) and STARTTLS (587) authenticated successfully in ~${connectedPorts[0].latencyMs}ms. Ready to dispatch emails!`;
+  } else if (overallStatus === "partial") {
+    details = `Port ${recommendedPort} is operating normally. Secondary port had a notice: ${results.find(r => r.status === "failed")?.error}`;
+  } else {
+    details = `SMTP handshake failed on both ports. Error: ${results[0]?.error || "Authentication rejected"}`;
+  }
+
+  return {
+    host,
+    configuredUser: cleanUser,
+    hasPassword,
+    overallStatus,
+    recommendedPort,
+    ports: results,
+    details,
+    timestamp: new Date().toISOString()
+  };
+}
+
+/**
+ * Sends a real live test message to verify end-to-end email delivery
+ */
+export async function sendTestEmail(recipientEmail: string, overrideUser?: string, overridePass?: string): Promise<{
+  success: boolean;
+  message: string;
+  port?: number;
+  user?: string;
+  host?: string;
+  messageId?: string;
+  latencyMs?: number;
+}> {
+  const t0 = Date.now();
+  const cleanTo = (recipientEmail || "").trim().toLowerCase();
+  if (!cleanTo || !cleanTo.includes("@")) {
+    throw new Error("A valid recipient email address is required to send a test message.");
+  }
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Zeta QA Platform - SMTP Test Message</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; margin: 0; padding: 24px; color: #1e293b;">
+  <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+    <div style="background: #0f172a; padding: 24px 32px; border-bottom: 2px solid #2b61d6;">
+      <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em;">ZETA QA PLATFORM</h1>
+      <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 13px;">SMTP Dispatcher Diagnostic Test</p>
+    </div>
+    <div style="padding: 32px;">
+      <div style="display: inline-block; padding: 6px 12px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 9999px; color: #065f46; font-size: 12px; font-weight: 600; margin-bottom: 16px;">
+        ✓ SMTP CONNECTION VERIFIED & ACTIVE
+      </div>
+      <h2 style="color: #0f172a; margin: 0 0 12px 0; font-size: 18px; font-weight: 600;">Your SMTP Service is Operational!</h2>
+      <p style="color: #475569; font-size: 14px; line-height: 1.6; margin: 0 0 20px 0;">
+        This test message confirms that your <strong>Zeta QA Platform</strong> instance has successfully authenticated with the email server and can deliver campaign approvals, user invitations, and alert notifications.
+      </p>
+
+      <div style="background: #f1f5f9; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500; width: 140px;">Recipient:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: 600;">${cleanTo}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">SMTP Host:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-family: monospace;">smtp.gmail.com</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Dispatched At:</td>
+            <td style="padding: 6px 0; color: #0f172a;">${new Date().toUTCString()}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Dual-Port Fallback:</td>
+            <td style="padding: 6px 0; color: #059669; font-weight: 600;">Active (465 SSL & 587 TLS)</td>
+          </tr>
+        </table>
+      </div>
+
+      <p style="color: #94a3b8; font-size: 12px; margin: 0; line-height: 1.5;">
+        Automated test message generated from Admin Settings &bull; Zeta Global & HP APJ QA Operations.
+      </p>
+    </div>
+  </div>
+</body>
+</html>
+  `;
+
+  const result = await sendEmailWithAutoFallback({
+    to: cleanTo,
+    subject: `✓ Zeta QA Platform: SMTP Dispatcher Test (${new Date().toLocaleTimeString()})`,
+    html,
+    text: `Zeta QA Platform SMTP Test Successful!\nDispatched to: ${cleanTo}\nAt: ${new Date().toISOString()}`,
+    smtpUser: overrideUser,
+    smtpPass: overridePass
+  });
+
+  const latency = Date.now() - t0;
+  return {
+    success: true,
+    message: `Test email successfully sent to ${cleanTo} via ${result.host}:${result.port} in ${latency}ms!`,
+    port: result.port,
+    user: result.user,
+    host: result.host,
+    messageId: result.messageId,
+    latencyMs: latency
+  };
+}
 
 export interface MailOptions {
   from?: string;

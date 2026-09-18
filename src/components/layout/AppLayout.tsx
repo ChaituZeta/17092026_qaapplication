@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { Sidebar } from "./Sidebar";
 import { SessionManager } from "../SessionManager";
 import { NetworkStatusBar } from "../NetworkStatusBar";
+import { GlobalHeader } from "./GlobalHeader";
 import { useRoutePersister, saveRouteScrollPosition, getRouteScrollPosition } from "@/lib/route-persistence";
 
 export function AppLayout({ role, userEmail }: { role: string; userEmail?: string }) {
@@ -44,6 +45,7 @@ export function AppLayout({ role, userEmail }: { role: string; userEmail?: strin
       <Sidebar role={role} userEmail={userEmail} />
       <main ref={mainRef} id="main-content-area" className="flex-1 flex flex-col relative overflow-y-auto overflow-x-auto min-w-0 bg-white">
         <NetworkStatusBar role={role} />
+        <GlobalHeader role={role} userEmail={userEmail} />
         <div className="flex-1 flex flex-col min-w-0 z-10">
           <Outlet />
         </div>

@@ -8,6 +8,7 @@ import { getAppCredentialFromDB, setAppCredentialInDB } from "../utils/credentia
 import { getPersistentDatabaseStatus, persistDatabaseConnectionStatus, clearPersistentDatabaseStatus } from "../utils/dbStatus.ts";
 import nodemailer from "nodemailer";
 import { emailTemplate, escapeHtml, isPrivateOrInternalUrl } from "../utils/helpers.ts";
+import { runSmtpDiagnostics, sendTestEmail } from "../utils/mailer.ts";
 
 export const router = Router();
 
@@ -599,6 +600,66 @@ router.post("/api/test-app-credential", async (req, res) => {
   }
 });
 
+/**
+ * Diagnostic tool: Runs comprehensive SMTP verification on Port 465 (SSL) and Port 587 (STARTTLS)
+ * using credentials stored in Supabase DB (app_credentials).
+ */
+router.all(["/api/smtp/diagnostics"], async (req, res) => {
+  const { user, pass } = req.body || {};
+  try {
+    const diag = await runSmtpDiagnostics(user, pass);
+    return res.json({ success: true, ...diag });
+  } catch (err: any) {
+    console.error("[SMTP Diagnostics API] Error:", err.message);
+    return res.status(500).json({
+      success: false,
+      overallStatus: "failed",
+      error: err.message || "Failed to run SMTP diagnostics"
+    });
+  }
+});
+
+/**
+ * Diagnostic tool: Dispatches a real test email to verify end-to-end delivery using DB credentials.
+ */
+router.post("/api/smtp/test-email", async (req, res) => {
+  const { to, user, pass } = req.body || {};
+  const recipient = (to || "").trim();
+
+  if (!recipient || !recipient.includes("@")) {
+    return res.status(400).json({
+      success: false,
+      error: "Please provide a valid recipient email address (e.g. your email) to receive the test message."
+    });
+  }
+
+  try {
+    const result = await sendTestEmail(recipient, user, pass);
+    return res.json({
+      success: true,
+      message: result.message,
+      port: result.port,
+      user: result.user,
+      host: result.host,
+      messageId: result.messageId,
+      latencyMs: result.latencyMs
+    });
+  } catch (err: any) {
+    console.error("[SMTP Test Email API] Delivery failed:", err.message);
+    let suggestion = "Check your sender email and Google 16-character App Password in Settings.";
+    if (err.message?.includes("535")) {
+      suggestion = "Google rejected the authentication. Ensure 2-Step Verification is active and generate a new App Password at myaccount.google.com/apppasswords.";
+    } else if (err.message?.includes("ETIMEDOUT") || err.message?.includes("ECONNREFUSED")) {
+      suggestion = "Outbound connection timed out. If running on a restricted cloud host, verify outbound ports 465 and 587 are not blocked.";
+    }
+    return res.status(400).json({
+      success: false,
+      error: err.message || "Failed to send test email.",
+      suggestion
+    });
+  }
+});
+
 router.post("/api/test-db-connection", async (req, res) => {
   const startTime = Date.now();
   const targetUrl = (req.body?.url || getSupabaseUrl() || "").trim();
@@ -651,6 +712,7 @@ router.get("/api/export-migration-data", async (req, res) => {
     let users: any[] = getCurrentAppState().users || [];
     let logs: any[] = [];
     let folders: any[] = [];
+    let checklists: any[] = [];
 
     if (supabaseUrl && supabaseKey) {
       const { createClient } = await import("@supabase/supabase-js");
@@ -664,28 +726,45 @@ router.get("/api/export-migration-data", async (req, res) => {
         if (uData && uData.length > 0) users = uData;
       } catch (e) {}
       try {
-        const { data: lData } = await client.from("activity_logs").select("*").limit(200);
+        const { data: lData } = await client.from("activity_logs").select("*").order("created_at", { ascending: false }).limit(500);
         if (lData) logs = lData;
       } catch (e) {}
       try {
         const { data: fData } = await client.from("folders").select("*");
         if (fData) folders = fData;
       } catch (e) {}
+      try {
+        const { data: chkData } = await client.from("checklists").select("*");
+        if (chkData) checklists = chkData;
+      } catch (e) {}
     }
 
     const exportBundle = {
-      exportVersion: "1.0",
-      exportDate: new Date().toISOString(),
+      exportVersion: "2.0-enterprise",
+      manifest: {
+        backupId: `hpqa-bak-${Date.now()}`,
+        exportedAt: new Date().toISOString(),
+        environment: "HP QA Platform v5",
+        generator: "HP QA Platform Data Management Console",
+        recordCounts: {
+          campaigns: campaigns.length,
+          users: users.length,
+          folders: folders.length,
+          logs: logs.length,
+          checklists: checklists.length
+        }
+      },
       appState: {
         quick_login_enabled: getCurrentAppState().quick_login_enabled
       },
       campaigns,
       users,
       folders,
+      checklists,
       logs
     };
 
-    res.setHeader("Content-Disposition", `attachment; filename="zeta_qa_migration_backup_${Date.now()}.json"`);
+    res.setHeader("Content-Disposition", `attachment; filename="hp_qa_database_backup_${new Date().toISOString().slice(0, 10)}.json"`);
     res.setHeader("Content-Type", "application/json");
     return res.json(exportBundle);
   } catch (err: any) {
@@ -709,26 +788,90 @@ router.post("/api/import-migration-data", async (req, res) => {
     saveAppState(getCurrentAppState());
 
     let insertedCampaigns = 0;
+    let insertedFolders = 0;
+    let insertedUsers = 0;
+    let insertedChecklists = 0;
+    let insertedLogs = 0;
+
     const supabaseUrl = getSupabaseUrl();
     const supabaseKey = getSupabaseServiceKey();
-    if (supabaseUrl && supabaseKey && Array.isArray(bundle.campaigns) && bundle.campaigns.length > 0) {
+    if (supabaseUrl && supabaseKey) {
       const { createClient } = await import("@supabase/supabase-js");
       const client = createClient(supabaseUrl, supabaseKey);
-      for (const camp of bundle.campaigns) {
-        try {
-          await client.from("campaigns").upsert(camp);
-          insertedCampaigns++;
-        } catch (e) {}
+
+      // 1. Restore Folders first (so campaigns can reference folder_id)
+      if (Array.isArray(bundle.folders) && bundle.folders.length > 0) {
+        for (const folder of bundle.folders) {
+          try {
+            await client.from("folders").upsert(folder);
+            insertedFolders++;
+          } catch (e) {}
+        }
       }
+
+      // 2. Restore Campaigns
+      if (Array.isArray(bundle.campaigns) && bundle.campaigns.length > 0) {
+        for (const camp of bundle.campaigns) {
+          try {
+            await client.from("campaigns").upsert(camp);
+            insertedCampaigns++;
+          } catch (e) {}
+        }
+      }
+
+      // 3. Restore App Users
+      if (Array.isArray(bundle.users) && bundle.users.length > 0) {
+        for (const user of bundle.users) {
+          try {
+            await client.from("app_users").upsert(user);
+            insertedUsers++;
+          } catch (e) {}
+        }
+      }
+
+      // 4. Restore Checklists if present
+      if (Array.isArray(bundle.checklists) && bundle.checklists.length > 0) {
+        for (const chk of bundle.checklists) {
+          try {
+            await client.from("checklists").upsert(chk);
+            insertedChecklists++;
+          } catch (e) {}
+        }
+      }
+
+      // 5. Restore Activity Logs if present
+      if (Array.isArray(bundle.logs) && bundle.logs.length > 0) {
+        for (const log of bundle.logs.slice(0, 100)) {
+          try {
+            await client.from("activity_logs").upsert(log);
+            insertedLogs++;
+          } catch (e) {}
+        }
+      }
+
+      // Log the database restoration event
+      try {
+        await client.from("activity_logs").insert([{
+          id: `restore-${Date.now()}`,
+          action: "Database Restored",
+          details: `Manual backup restored: ${insertedCampaigns} campaigns, ${insertedFolders} folders, ${insertedUsers} users`,
+          created_at: new Date().toISOString()
+        }]);
+      } catch (e) {}
     }
 
-    // Database migrations must preserve the existing .env file and its credentials.
-    // Existing database credentials in .env are strictly preserved and not modified or deleted.
-    console.log("[Server API] Database migration completed. Existing .env credentials preserved intact.");
+    console.log(`[Server API] Database restoration completed: ${insertedCampaigns} campaigns, ${insertedFolders} folders, ${insertedUsers} users.`);
 
     return res.json({
       success: true,
-      message: `Successfully imported backup data! Restored ${insertedCampaigns} campaigns and ${bundle.users?.length || 0} users. Existing .env credentials preserved intact.`
+      message: `Database successfully restored! Synchronized ${insertedCampaigns} campaigns, ${insertedFolders} folders, ${insertedUsers} users, and ${insertedChecklists} checklists. Existing credentials and connection settings remain intact.`,
+      stats: {
+        campaigns: insertedCampaigns,
+        folders: insertedFolders,
+        users: insertedUsers,
+        checklists: insertedChecklists,
+        logs: insertedLogs
+      }
     });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || "Failed to import migration data" });
